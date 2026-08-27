@@ -114,12 +114,23 @@ Temporary Items
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 
+# Unity projects may live below /unity rather than at the repository root.
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Bb]uild/
+**/[Bb]uilds/
+**/[Ll]ogs/
+**/[Uu]ser[Ss]ettings/
+
 # MemoryCaptures can get excessive in size.
 # They also could contain extremely sensitive data
 /[Mm]emoryCaptures/
+**/[Mm]emoryCaptures/
 
 # Recordings can get excessive in size
 /[Rr]ecordings/
+**/[Rr]ecordings/
 
 # Uncomment this line if you wish to ignore the asset store tools plugin
 # /[Aa]ssets/AssetStoreTools*
@@ -150,6 +161,12 @@ ExportedObj/
 *.mdb
 *.opendb
 *.VC.db
+
+# Track project-owned .NET definitions while keeping Unity-generated IDE files ignored.
+!/HaruChat.sln
+!/HaruChat.slnx
+!/packages/**/*.csproj
+!/tests/**/*.csproj
 
 # Unity3D generated meta files
 *.pidb.meta
@@ -233,3 +250,6 @@ DerivedData/
 # Native build output
 /native/build/
 /native/out/
+
+# Project-wide agent guidance is shared and version-controlled.
+!AGENTS.md
