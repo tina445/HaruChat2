@@ -51,11 +51,12 @@ HaruChat2는 iOS/iPadOS에서 동작하는 로컬 LLM 기반 AI 캐릭터 챗 �
 | ASM-009 | `ModelEvent` 계약은 향후 ToolCall과 Usage를 확장할 수 있지만 MVP는 Token, Completed, Error 및 cancellation terminal 상태를 필수로 한다. |
 | ASM-010 | Memory, Agent, Live2D 및 remote provider는 MVP에서 구현하지 않되 교체 가능한 interface와 중립적인 domain type을 수용할 계층 경계를 보존한다. |
 | ASM-011 | MVP 진단은 기능 검증에 필요한 상태와 측정값을 제공한다. 고정된 TPS, TTFT, 메모리 및 발열 합격 수치는 실제 M4 iPad baseline 측정 후 정한다. |
-| ASM-012 | 무료 Apple ID/Personal Team과 7일 provisioning 만료를 허용하는 설치 경로를 우선 검토한다. 다만 macOS CI만으로 Personal Team 실기기 설치가 가능하다고 보장하지 않으며, Phase 0에서 실제 설치 Gate를 통과하지 못하면 일시적인 Xcode Mac 접근 또는 유료 Apple Developer Program을 device milestone의 대안으로 선택한다. App Store와 TestFlight 출시는 필요하지 않다. |
+| ASM-012 | 무료 Apple ID/Personal Team과 7일 provisioning 만료를 허용하는 설치 경로를 우선 검토한다. 다만 macOS CI만으로 Personal Team 실기기 설치가 가능하다고 보장하지 않으며, Apple signing feasibility는 사용자 소유의 **Phase 3 진입 전 Gate**로 보류한다. Gate를 통과하지 못하면 일시적인 Xcode Mac 접근 또는 유료 Apple Developer Program을 device milestone의 대안으로 선택한다. App Store와 TestFlight 출시는 필요하지 않다. |
 | ASM-013 | Codemagic Apple Silicon을 Apple 빌드의 우선 후보로 사용하고, 가용성이나 무료 한도 문제가 있으면 GitHub Actions macOS로 대체할 수 있다. |
 | ASM-014 | Linux backend 통합 테스트는 CPU를 사용하고, Metal 활성화는 macOS CI의 빌드 검증과 실제 M4 iPad에서 최종 확인한다. |
 | ASM-015 | 모델, llama.cpp, Unity, Live2D 및 기타 third-party 자산의 라이선스는 재배포 전에 별도 확인한다. |
 | ASM-016 | Qwen 계열이 multimodal capability를 제공하더라도 MVP는 text-only character chat으로 한정한다. image input, vision projector와 multimodal UI는 별도 요구사항이 승인되기 전까지 구현하지 않는다. |
+| ASM-017 | Android는 MVP delivery target이 아니다. native C ABI와 CMake target은 장래 Android arm64-v8a shared library를 허용하도록 platform-neutral하게 유지하지만, Android SDK/NDK, Java/Kotlin, Unity Android module, device/CI artifact는 별도 승인 전 도입하지 않는다. |
 
 ## 5. 범위
 
@@ -97,6 +98,7 @@ HaruChat2는 iOS/iPadOS에서 동작하는 로컬 LLM 기반 AI 캐릭터 챗 �
 - 첫 milestone의 상세 성능 경쟁이나 모델 품질 비교
 - image input, vision projector와 multimodal interaction
 - llama.cpp 내부에 HaruChat2 전용 기능 또는 모델별 prompt 규칙 구현
+- Android 앱, Android SDK/NDK 설치와 Android device/CI artifact 검증
 
 ## 6. 기능 요구사항
 
@@ -121,7 +123,7 @@ HaruChat2는 iOS/iPadOS에서 동작하는 로컬 LLM 기반 AI 캐릭터 챗 �
 | FR-017 | Runtime diagnostics | model/backend 상태, Metal 활성화 여부, model load time, TTFT, prompt/generation throughput 및 context usage를 가능한 범위에서 조회한다. | P0 | 예 | Backend / Diagnostics | Linux와 iPad smoke test가 최소 backend 종류, load 상태, context usage 및 timing을 기록한다. 지원하지 않는 metric은 0 등 오해 가능한 값 대신 unavailable로 표시된다. |
 | FR-018 | Unity 비동기 연동 | Unity가 model load와 generation을 main thread 밖에서 실행하고 main thread에서 안전하게 UI를 갱신한다. | P0 | 예 | Unity Presentation | generation 중 UI 입력과 frame update가 계속 동작하고, stream fragment와 terminal/error 상태가 Unity UI에 표시되며 scene 종료 시 worker와 native handle이 정리된다. |
 | FR-019 | MVP 캐릭터 채팅 화면 | 사용자가 캐릭터와 모델을 선택하고 메시지를 보내며 응답을 스트리밍으로 보고 취소하거나 새 대화를 시작한다. | P0 | 예 | Unity Presentation / Application | M4 iPad에서 캐릭터 선택→Qwen GGUF load→메시지 입력→캐릭터 지침이 반영된 스트리밍 응답의 end-to-end 시나리오가 성공한다. 취소와 새 대화가 동일 실행에서 성공한다. |
-| FR-020 | Native artifact 제공 | 동일한 C ABI core를 Linux shared library와 iOS XCFramework로 제공한다. | P0 | 예 | Native Build / Interop | Linux test executable이 `libllmcore.so`에 link되고, macOS CI가 device arm64를 포함한 `LlmCore.xcframework`를 생성하여 최소 consumer link test를 통과한다. |
+| FR-020 | Native artifact 제공 | 동일한 platform-neutral C ABI core를 Linux shared library와 iOS XCFramework로 제공한다. Android arm64-v8a `.so`는 장래 target으로만 준비한다. | P0 | 예 | Native Build / Interop | Linux test executable이 `libllmcore.so`에 link되고, macOS CI가 device arm64를 포함한 `LlmCore.xcframework`를 생성하여 최소 consumer link test를 통과한다. Android artifact는 MVP acceptance가 아니다. |
 | FR-021 | SQLite Memory | session summary와 long-term memory를 SQLite에 저장하고 FTS5, keyword relevance, recency, importance로 검색한다. | P1 | 아니요 | Memory | 재실행 후 memory가 유지되고 fixture 검색의 filter/order가 결정적으로 검증된다. Character/Model Adapter는 SQLite concrete type을 참조하지 않는다. |
 | FR-022 | Memory retrieval 확장 | `IMemoryStore`와 retrieval 경계를 통해 향후 embedding 검색을 추가한다. | P1 | 아니요 | Memory | keyword retriever를 mock/대체 구현으로 교체해도 Character Runtime과 저장 schema 소비자가 변경되지 않는다. |
 | FR-023 | Agent와 Tool 실행 | ToolCall을 Agent Runtime이 수신해 등록 여부와 permission을 확인하고 실행 결과를 모델 대화에 반환한다. | P1 | 아니요 | Agent Runtime | 등록된 test tool만 schema validation 후 실행되고 미등록/거부 tool은 실행되지 않으며 구조화된 ToolResult가 생성된다. 모델이 임의 코드를 직접 실행할 경로가 없다. |
@@ -140,7 +142,7 @@ HaruChat2는 iOS/iPadOS에서 동작하는 로컬 LLM 기반 AI 캐릭터 챗 �
 | NFR-003 | Memory | model/context/event buffer의 ownership이 명확하고 reset/unload/reload 반복 시 누수나 use-after-free가 없어야 한다. | sanitizer가 가능한 Linux 테스트와 M4 iPad에서 최소 10회의 load→generate→reset→unload smoke loop를 실행해 crash와 지속 증가를 확인한다. |
 | NFR-004 | Reliability | 정상 완료, 취소, 오류의 terminal 상태는 요청마다 정확히 한 번 발생하고 이후 자원 정리가 가능해야 한다. | contract test에서 모든 종료 경로의 terminal event 수와 후속 reset/unload 성공을 검사한다. |
 | NFR-005 | Thread Safety | model/context 소유권과 허용되는 동시 작업을 문서화하고 lifecycle 경쟁으로 deadlock이나 data race가 발생하지 않아야 한다. | ThreadSanitizer가 가능한 native stress test와 generate/cancel/reset/unload 경쟁 test를 수행한다. |
-| NFR-006 | Portability | Core Runtime은 Linux와 iOS arm64에서 빌드되고 Unity 없이도 실행·테스트할 수 있어야 한다. | clean Linux CI에서 native/managed test를 실행하고 macOS CI에서 iOS XCFramework 및 non-Unity consumer link test를 수행한다. |
+| NFR-006 | Portability | Core Runtime은 Linux와 iOS arm64에서 빌드되고 Unity 없이도 실행·테스트할 수 있어야 한다. C ABI/CMake는 장래 Android arm64-v8a cross-compile을 허용하되 Android delivery를 요구하지 않는다. | clean Linux CI에서 native/managed test를 실행하고 macOS CI에서 iOS XCFramework 및 non-Unity consumer link test를 수행한다. Android NDK가 준비된 뒤 configure validation을 별도 기록한다. |
 | NFR-007 | Extensibility | Character/Agent 상위 로직은 특정 모델, provider, endpoint 또는 inference engine에 강결합하지 않아야 한다. | dependency test와 mock adapter/backend 교체 test로 concrete provider 참조가 경계를 넘지 않는지 확인한다. |
 | NFR-008 | Dependency Direction | Unity, Live2D, SQLite, HTTP, P/Invoke와 llama.cpp는 Core domain의 interface 뒤에 위치해야 한다. | project reference와 namespace dependency를 CI에서 검사하고 Core assembly가 UnityEngine/Cubism/native concrete assembly를 참조하지 않는지 확인한다. |
 | NFR-009 | Maintainability | llama.cpp는 pin된 upstream dependency로 관리하고 HaruChat2 기능을 upstream source에 직접 구현하지 않아야 한다. | dependency commit을 기록하고 update 절차를 문서화한다. upstream tree diff가 있다면 별도 patch와 ADR 없이는 CI를 실패시킨다. |

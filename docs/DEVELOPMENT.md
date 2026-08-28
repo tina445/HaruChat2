@@ -2,7 +2,7 @@
 
 ## 1. 목적과 범위
 
-이 문서는 HaruChat2를 Linux에서 개발하고, Apple 전용 산출물만 macOS CI에서 만드는 기준 절차를 정의한다. 현재 저장소는 설계 단계이므로 아래 명령은 해당 Phase의 파일이 추가된 뒤 유효해지는 목표 인터페이스다.
+이 문서는 HaruChat2를 Linux에서 개발하고, Apple 전용 산출물만 macOS CI에서 만드는 기준 절차를 정의한다. M1 Linux validation script는 repository root에서 실행하는 표준 entry point이며, Apple/Android artifact 명령은 해당 Phase의 파일과 toolchain이 준비된 뒤에만 유효하다.
 
 핵심 원칙은 다음과 같다.
 
@@ -38,9 +38,21 @@ git --version
 
 Unity 6.3 LTS는 Unity Hub 또는 공식 Linux 배포판으로 설치한다. 저장소에 editor binary나 license 파일을 넣지 않는다. Unity batch test를 실행할 때는 `UNITY_EDITOR_PATH`로 고정된 editor executable을 가리킨다.
 
+### 2.1 Arch Linux bootstrap verification
+
+`scripts/verify-archlinux.sh`는 Arch 계열 Linux에서 다음 command를 검사한다: `dotnet`, `cmake`, `ninja`, `clang`, `git`, `ccache`, `valgrind`. 이 script는 package를 설치하거나 system configuration을 바꾸지 않는다. 누락된 command가 있으면 사용자가 검토 후 실행할 최소 설치 명령을 출력한다.
+
+```bash
+./scripts/verify-archlinux.sh
+# 필요한 경우 사용자가 직접 검토·승인 후 실행
+sudo pacman -S --needed ccache valgrind
+```
+
+이미 설치된 .NET SDK, CMake, Ninja, Clang, Git을 재설치하지 않는다. Android SDK/NDK, JDK, Unity Android module은 Android delivery가 승인되기 전까지 이 bootstrap 대상이 아니다.
+
 ## 3. 저장소 초기화와 `llama.cpp`
 
-`llama.cpp`는 `native/third_party/llama.cpp`에 Git submodule로 추가하고 검증된 upstream commit을 superproject에서 pin한다.
+`llama.cpp`는 `native/third_party/llama.cpp`에 Git submodule로 추가하고 official `v0.1.2` tag의 commit `1511ce3bc3f087376c8526b4ad07100bfabb277f`를 superproject에서 pin한다. Release build에는 `LLAMA_BUILD_IS_DEV=OFF`를 사용한다.
 
 ```bash
 git submodule sync --recursive
@@ -81,7 +93,16 @@ cmake --build native/build
 ctest --test-dir native/build --output-on-failure
 ```
 
-기본 Linux CI는 CPU backend로 ABI lifecycle, load failure, context lifecycle, event ordering, cancellation과 unload/reload를 검사한다. sanitizer job은 지원되는 compiler에서 AddressSanitizer와 UndefinedBehaviorSanitizer를 활성화한다.
+repository root의 표준 전체 검증은 다음 한 명령이다. script는 managed solution, model-free native configure/build/CTest, public C consumer link smoke를 순서대로 실행한다. `HARUCHAT_TEST_MODEL_PATH`가 있으면 별도의 llama.cpp-enabled build에서 `model-smoke`만 추가 실행해 fake GGUF fixture가 real backend suite에 섞이지 않게 한다.
+
+M1 managed contract suite는 external test framework 없이 .NET 10 standalone executable로 유지하므로, validation script는 `dotnet test` 뒤에 contract executable도 실행한다.
+
+```bash
+./scripts/validate-linux.sh
+```
+
+기본 Linux CI는 CPU backend로 ABI lifecycle, load failure, context lifecycle, event ordering, cancellation과 unload/reload를 검사한다. sanitizer job은 지원되는 compiler에서 AddressSanitizer, UndefinedBehaviorSanitizer와 LeakSanitizer를 활성화하며, `HARUCHAT_TEST_MODEL_PATH`가 지정되면 별도 llama.cpp-enabled model smoke에도 적용한다.
+`scripts/validate-linux.sh`는 sanitizer CTest와 별도의 비-sanitizer Debug build에서 lifecycle executable을 Valgrind의 definite-leak error exit mode로 실행한다. Valgrind와 ASan runtime은 동일 process에서 함께 사용할 수 없으므로 두 검증은 의도적으로 분리한다. Arch host의 stripped `ld-linux-x86-64.so.2`가 Valgrind의 필수 `memcmp` redirection을 제공하지 않으면 script는 ASan/UBSan 통과를 유지하고 Valgrind를 deferred로 기록한다. `HARUCHAT_REQUIRE_VALGRIND=1`이면 이 환경 문제도 실패로 승격한다. 이 경우 glibc debug-symbol을 제공하는 CI image 또는 matching debug artifact를 갖춘 host에서 재실행해야 하며, 단순 debuginfod URL 설정만으로 해결되지 않을 수 있다.
 
 실제 GGUF smoke test는 선택적이고 다음 환경변수로 명시적으로 활성화한다.
 
@@ -147,6 +168,14 @@ CI가 보장하지 않는 항목:
    - 유료 Apple Developer Program 계정과 CI-compatible signing을 사용한다.
 
 Gate 실패는 Linux core와 unsigned XCFramework 개발을 막지 않지만, "M4 iPad에서 실행" MVP 완료 조건은 충족할 수 없다. 실기기 설치를 simulator나 unsigned artifact 생성으로 대체해 완료 처리하지 않는다.
+
+이 Gate는 Phase 0 완료 조건이 아니라 **Phase 3 시작 전 사용자 소유 Gate**다. M1과 Phase 2의 Linux/unsigned artifact 작업은 Gate 판정 없이 진행할 수 있다.
+
+## 6.1 Android-ready native boundary (deferred)
+
+`hc_llm_*` C11 header와 native CMake target은 platform-neutral하게 유지한다. 장래 Android는 NDK toolchain으로 arm64-v8a `libllmcore.so`를 cross-compile하고 Android plugin artifact layout에 package할 수 있어야 한다. M1의 Android 범위는 이 CMake configure entry point와 문서뿐이다.
+
+이번 범위에서는 Android SDK/NDK/JDK 설치, Java/Kotlin/JNI binding, Unity Android module, Android device test, Android CI build와 `.so` artifact publication을 수행하거나 성공으로 주장하지 않는다. NDK가 준비된 후에도 첫 검증은 configure validation이며, artifact/device gate는 별도 승인과 roadmap update가 필요하다.
 
 ## 7. 모델, 설정과 비밀정보
 

@@ -32,6 +32,7 @@ MVP에서는 다음 제약을 의도적으로 받아들인다.
 5. **stream은 callback이 아닌 polling queue로 건넨다.** native worker가 이벤트를 만들고 managed poll pump가 가져온다. Unity main thread는 inference나 blocking poll을 수행하지 않는다.
 6. **데이터는 코드보다 바깥에 둔다.** 캐릭터와 모델별 차이는 `CharacterBundle`과 `ModelProfile`로 표현한다. 모델 변경을 위해 Domain 또는 native 코드를 수정하지 않는다.
 7. **offline과 최소 보존이 기본값이다.** MVP 경로는 네트워크를 요구하지 않는다. 이후 원격 provider와 telemetry는 명시적 opt-in 경계 안에서만 동작한다.
+8. **native ABI는 platform-neutral이다.** `hc_llm_*`는 Linux, Apple, 장래 Android의 artifact 형식과 무관한 C11 계약이다. 플랫폼별 load path와 packaging은 infrastructure/composition 책임이며 ABI에 들어가지 않는다.
 
 ## 3. 계층과 의존성
 
@@ -89,6 +90,12 @@ flowchart TB
 ```
 
 `com.haruchat.runtime`의 runtime source는 `.NET Standard 2.1` API만 사용한다. Linux의 .NET 10 LTS test host와 Unity가 같은 source를 compile한다. test host용 project 파일이 runtime source에 플랫폼 조건부 동작을 끌어들이지 않도록 한다.
+
+### 4.1 Native artifact portability
+
+M1의 생산 artifact는 Linux `libllmcore.so`다. Phase 2는 동일 header와 symbol set을 iOS `LlmCore.xcframework`로 package한다. 장래 Android는 같은 ABI를 Android arm64-v8a `libllmcore.so`로 cross-compile할 수 있게 CMake target과 artifact layout만 보존한다. Android Java/Kotlin binding, Unity Android plugin import, SDK/NDK 설치, Android device/CI 검증은 MVP와 M1 범위 밖이다.
+
+ABI header에는 platform-specific path, Objective-C/Swift, JNI, Java/Kotlin 또는 Unity type을 추가하지 않는다. 각 platform binding은 `ILocalModelBackend`의 concrete infrastructure implementation으로만 추가하며 Character Runtime과 `LocalModelAdapter`를 변경하지 않는다.
 
 ## 5. 핵심 계약과 타입
 
@@ -164,7 +171,9 @@ LlamaCppBackend → hc_llm_* → llama.cpp
 
 `ModelProfile`은 GGUF path 자체나 비밀정보를 저장하지 않는다. 실제 모델 설치 정보는 runtime configuration의 path와 checksum으로 관리한다. profile은 load 전에 schema와 capability를 검증하며, profile을 바꾸는 동작은 기존 session/context를 폐기한 뒤 새 session을 만든다.
 
-`ILocalModelBackend`는 다음 기능에만 한정한다.
+`ILocalModelBackend`는 다음 기능에만 한정한다. M1은 runtime package에 이 port와 handle/options/event/metrics DTO 및 mock contract test를 선언할 수 있지만 native P/Invoke와 `LlamaCppBackend` concrete implementation은 Phase 4의 책임이다.
+
+M1 contract는 native runtime lifetime을 명시하기 위해 `CreateRuntimeAsync`/`DestroyRuntimeAsync`와 generation handle의 `DestroyGenerationAsync`를 포함하며, raw native polling을 `PollEventsAsync` batch로 노출한다. Phase 4의 `LlamaCppBackend`가 이를 C ABI에 매핑하고 `LocalModelAdapter`가 polling 결과를 `IAsyncEnumerable<ModelEvent>`로 변환한다. 이 local polling port는 provider-neutral `IModelSession`의 public streaming interface가 아니다.
 
 ```csharp
 public interface ILocalModelBackend : IAsyncDisposable
@@ -293,7 +302,7 @@ conversation에는 user 입력을 generation 시작 전에 pending turn으로 �
 
 ### 8.1 경계 형태
 
-public symbol은 `hc_llm_*` prefix를 사용하고 `extern "C"`로 export한다. ABI에는 STL container, C++ class, exception, `bool`, platform-specific string을 노출하지 않는다.
+public symbol은 `hc_llm_*` prefix를 사용하고 `extern "C"`로 export한다. ABI에는 STL container, C++ class, exception, `bool`, platform-specific string을 노출하지 않는다. 이 header는 Linux, Apple, 장래 Android가 공유하며 target-specific preprocessor branch나 platform loader API를 public surface에 두지 않는다.
 
 ```c
 typedef struct hc_llm_runtime_t* hc_llm_runtime_handle;

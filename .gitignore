@@ -168,6 +168,10 @@ ExportedObj/
 !/packages/**/*.csproj
 !/tests/**/*.csproj
 
+# .NET build outputs are reproducible and must not enter source control.
+**/bin/
+**/obj/
+
 # Unity3D generated meta files
 *.pidb.meta
 *.pdb.meta

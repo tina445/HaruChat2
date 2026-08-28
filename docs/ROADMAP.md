@@ -6,7 +6,7 @@
 
 | Milestone | 포함 Phase | 결과 |
 |---|---:|---|
-| M0 Design & Feasibility | 0 | 승인된 설계 기준선, 고정 가능한 toolchain, signing 현실성 판정 |
+| M0 Design & Feasibility | 0 | 승인된 설계 기준선, Linux toolchain 검증과 skeleton |
 | M1 Linux Native Core | 1 | Linux에서 안정적인 C ABI와 local generation lifecycle 검증 |
 | M2 Apple Native Proof | 2~3 | unsigned XCFramework와 M4 iPad native Metal probe |
 | M3 Headless Character Runtime | 4~5 | Linux에서 managed adapter와 character streaming vertical slice |
@@ -18,25 +18,25 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 ## Phase 0 — 설계 기준선과 Feasibility Gate
 
-**목표:** 구현에 들어가기 전에 요구사항, 경계, toolchain과 실제 iPad 설치 경로를 고정한다.
+**목표:** 구현에 들어가기 전에 요구사항, 경계, Linux toolchain과 재현 가능한 skeleton을 고정한다.
 
-- **구현 범위:** 현재 문서와 ADR을 승인하고, 구현 시작 시 .NET 10 solution/test host, CMake/Ninja skeleton, Unity 6.3 LTS 빈 프로젝트와 asmdef 경계, llama.cpp submodule pin, dependency lock, CI skeleton을 만든다. 최소 앱으로 Personal Team signing 가능성을 조사한다.
-- **생성 파일/모듈:** `AGENTS.md`, `docs/`, 향후 `HaruChat.slnx`, `packages/`, `native/`, Unity project, build/test script, CI workflow, signing feasibility 기록.
-- **의존성:** Linux 개발환경, Git, Unity license, Codemagic 계정, M4 iPad, 사용 가능한 Apple ID 조건.
-- **테스트:** 문서 link/추적성 검사, managed/native 빈 test suite, Unity EditMode smoke, Codemagic unsigned hello-library build. 서명 Gate는 최소 앱이 실제 M4 iPad에 설치되고 launch되는지 확인한다.
-- **완료 조건:** 문서와 ADR의 모순이 없고 Linux one-command validation 및 unsigned Apple build 경로가 정의된다. signing은 (a) CI/Personal Team 실기기 설치 성공 또는 (b) 일시적 Xcode Mac 접근/유료 개발자 계정 필요로 판정하고 owner와 실행 시점을 기록한다.
-- **예상 위험:** 무료 Personal Team을 CI만으로 사용할 수 없을 수 있다. Gate 미통과 상태에서도 Linux와 unsigned Apple 개발은 진행할 수 있지만 Phase 3과 Unity MVP는 완료할 수 없다. Unity 6.3 LTS patch와 Xcode image는 skeleton 생성 시 정확히 고정한다.
+- **구현 범위:** .NET 10 solution/test host, `netstandard2.1` runtime contract project, CMake/Ninja skeleton, llama.cpp submodule pin, dependency lock, Linux one-command validation을 만든다. Arch Linux bootstrap은 이미 있는 toolchain을 재설치하지 않고 `ccache`와 `valgrind`를 포함한 필수 command를 검증하며, 설치가 필요하면 사용자가 실행할 `pacman --needed` 명령만 안내한다.
+- **생성 파일/모듈:** `HaruChat.slnx`, `packages/`, `native/`, `scripts/`, `docs/`, build/test skeleton. Unity project와 CI workflow는 후속 Apple/Unity phase에서 추가한다.
+- **의존성:** Linux 개발환경과 Git. JDK, Android SDK/NDK, Unity Android module, Unity license, Codemagic 계정, M4 iPad 및 Apple ID는 이 Phase의 의존성이 아니다.
+- **테스트:** 문서 link/추적성, managed/native skeleton test, Arch toolchain verification과 one-command Linux validation을 수행한다.
+- **완료 조건:** 문서와 ADR의 모순이 없고 Linux one-command validation이 정의·실행 가능하다. Apple signing feasibility는 완료 조건이 아니라 사용자 소유 Phase 3 진입 전 Gate로 기록된다.
+- **예상 위험:** 로컬 Linux에 진단 도구가 없을 수 있다. bootstrap은 package manager를 변경하지 않으므로 사용자가 최소 패키지 설치를 승인·수행해야 한다.
 
 ## Phase 1 — Linux Native llama.cpp Wrapper
 
 **목표:** llama.cpp를 수정하지 않고 Linux CPU에서 lifecycle과 streaming이 동작하는 thin C ABI wrapper를 만든다.
 
-- **구현 범위:** pinned llama.cpp submodule, opaque runtime/model/context/job handle, GGUF load/unload, context reset/reuse, async generation worker, bounded polling queue, cancellation, metadata/metrics, error 및 UTF-8 ownership을 구현한다. 한 context에는 활성 job 하나만 허용한다.
+- **구현 범위:** official llama.cpp `v0.1.2` tag의 commit `1511ce3bc3f087376c8526b4ad07100bfabb277f`를 pinned submodule로 사용하고, opaque runtime/model/context/job handle, GGUF load/unload, context reset/reuse, async generation worker, bounded polling queue, cancellation, metadata/metrics, error 및 UTF-8 ownership을 구현한다. 한 context에는 활성 job 하나만 허용한다. M1에는 `ILocalModelBackend`와 DTO contract를 선언할 수 있으나 `LlamaCppBackend` P/Invoke와 `LocalModelAdapter` concrete implementation은 Phase 4까지 구현하지 않는다.
 - **생성 파일/모듈:** `native/llmcore`, `native/third_party/llama.cpp`, public `hc_llm_*` C header, `libllmcore.so`, CMake target, native tests, 작은 C smoke harness.
 - **의존성:** Phase 0의 문서 기준선과 toolchain, 검증된 llama.cpp commit, opt-in 테스트 GGUF.
 - **테스트:** invalid argument/load, create/destroy, GGUF load, token streaming, event 순서, UTF-8 fragment, cancellation, reset, repeated generation, unload/reload, context당 중복 job, slow consumer와 sanitizer.
-- **완료 조건:** Linux CPU에서 GGUF generation이 재현되고 cancel/reset/unload 뒤 leak, deadlock, use-after-free가 없다. C consumer가 public header를 compile/link하며 ABI version과 event payload lifetime을 검증한다.
-- **예상 위험:** llama.cpp API churn, worker 종료 race, queue backpressure, CI용 GGUF 크기·라이선스. upstream pin과 wrapper-local 변환, optional model-smoke label로 격리한다.
+- **완료 조건:** Linux CPU에서 opt-in GGUF generation이 재현되고 cancel/reset/unload 뒤 leak, deadlock, use-after-free가 없다. C consumer가 public header를 compile/link하며 ABI version과 event payload lifetime을 검증한다. `HARUCHAT_TEST_MODEL_PATH`가 없으면 model-smoke만 skip하고 다른 lifecycle/sanitizer suite는 통과해야 한다.
+- **예상 위험:** llama.cpp API churn, worker 종료 race, queue backpressure, CI용 GGUF 크기·라이선스. upstream pin과 wrapper-local 변환, optional model-smoke label로 격리한다. Android cross-compile은 CMake configure entry point만 준비하며 NDK/device/CI artifact 성공으로 주장하지 않는다.
 
 ## Phase 2 — macOS CI와 unsigned XCFramework
 
@@ -55,7 +55,7 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 - **구현 범위:** 최소 Objective-C++/Swift host 또는 Xcode sample에서 XCFramework를 load하고 runtime-configured GGUF로 load, generate, poll, cancel, reset, unload/reload를 실행한다. UI는 로그와 시작/취소 control 정도로 제한한다.
 - **생성 파일/모듈:** disposable이 아닌 재현 가능한 native probe target, device checklist, model/profile/checksum을 포함한 결과 기록.
-- **의존성:** Phase 0의 실행 가능한 signing 경로, Phase 2 XCFramework, 실제 M4 iPad와 라이선스가 확인된 Qwen GGUF.
+- **의존성:** 사용자 소유 Apple signing feasibility Gate의 통과, Phase 2 XCFramework, 실제 M4 iPad와 라이선스가 확인된 Qwen GGUF.
 - **테스트:** Metal backend name/GPU offload 확인, non-empty ordered stream, cancel 후 재생성, context reset, 반복 generation, unload/reload, load time/TTFT/TPS/context/memory와 기본 pressure 관찰.
 - **완료 조건:** M4 iPad에서 Metal이 실제 활성화된 상태로 native lifecycle 전체가 동작하고 crash나 명백한 지속 메모리 증가가 없다. compile 성공이나 simulator 결과로 대체하지 않는다.
 - **예상 위험:** signing/provisioning, GGUF 반입, Metal runtime 미활성, memory/thermal pressure. 실패는 managed/Unity에서 우회하지 않고 native wrapper 또는 build 설정에서 해결한다.

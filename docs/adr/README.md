@@ -12,5 +12,6 @@ ADR은 구현 전후에 유지해야 할 중요한 기술 결정을 기록한다
 | [ADR-0006](0006-limit-unity-to-presentation.md) | Unity를 Presentation 계층으로 제한 | Accepted | 2026-08-27 |
 | [ADR-0007](0007-use-native-polling-event-queue.md) | Native streaming 경계에 polling event queue 사용 | Accepted | 2026-08-27 |
 | [ADR-0008](0008-use-data-driven-model-profiles.md) | 모델 차이를 data-driven profile로 표현 | Accepted | 2026-08-27 |
+| [ADR-0009](0009-platform-neutral-native-abi.md) | Platform-neutral native ABI와 Android delivery 보류 | Accepted | 2026-08-28 |
 
 각 ADR은 `Context`, `Decision`, `Alternatives`, `Consequences`, `Status`, `Date`를 포함한다.

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="packages/com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" />
+  <Project Path="tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Runtime.Contracts.Tests.csproj" />
+</Solution>
