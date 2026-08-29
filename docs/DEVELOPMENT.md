@@ -138,6 +138,93 @@ Unity license 활성화는 개발자/CI 환경의 책임이며 credential을 저
 5. 최소 native link smoke target을 빌드한다.
 6. unsigned XCFramework zip, SHA-256, compiler/Xcode/SDK/llama.cpp commit metadata를 artifact로 게시한다.
 
+### Apple artifact build entry point
+
+`scripts/build-apple-xcframework.sh`는 두 CI provider가 공통으로 사용하는
+단일 진입점이다. Xcode가 설치된 macOS host에서 pinned llama.cpp source,
+`GGML_METAL=ON`, `GGML_METAL_EMBED_LIBRARY=ON`으로 iOS arm64와
+arm64-simulator slice를 빌드하고, `BUILD_SHARED_LIBS=OFF` static archive를
+합쳐 unsigned `LlmCore.xcframework`를 만든다. shader를 embed하므로 이후
+Unity plugin 경계에서 별도의 Metal resource를 복사하지 않는다.
+
+Codemagic은 `codemagic.yaml`의 primary Apple Silicon workflow를 실행한다.
+`.github/workflows/apple-native-artifact.yml`의 manual/PR GitHub Actions job은
+동일 script를 사용하는 fallback이다. 어느 workflow도 signing secret을 쓰지
+않는다.
+
+script의 기본 출력 위치는 `artifacts/apple/`이며, 비어 있지 않은 directory를
+덮어쓰지 않는다. 별도 local build에는 비어 있는 directory를
+`HARUCHAT_APPLE_ARTIFACT_DIR`로 지정한다. 게시 산출물은 다음과 같다.
+
+- `LlmCore.xcframework.zip`
+- `LlmCore.xcframework.zip.sha256`
+- `build-manifest.txt` (Git, llama.cpp, Xcode/SDK, CMake, ABI, options)
+
+build는 두 platform slice, 필요한 `hc_llm_*` export, public header와
+simulator slice 대상 Objective-C consumer link를 확인한다. iOS binary 실행이나
+device Metal runtime은 증명하지 않으며, 이는 Phase 3 검증이다.
+
+### Codemagic initial setup and manual runbook
+
+Codemagic account 접근, source-control authorization, repository 선택, billing과
+quota 확인은 외부 account 작업이다. 저장소가 자동화하지 않으며 project owner가
+다음 과정을 수행한다.
+
+1. Codemagic UI에서 repository를 연결하고 root-level `codemagic.yaml`이 있는
+   branch를 선택한다.
+2. **Check for configuration file**을 실행하고 Codemagic이 인식한
+   `apple-native-artifact` workflow를 선택한다.
+3. Apple Silicon M2 runner와 표시된 Xcode image를 확인한다. 이 unsigned native
+   workflow에는 environment group, signing certificate, provisioning profile,
+   model, API key가 필요 없다.
+4. build를 수동 시작한다. 완료 후 XCFramework zip, SHA-256 file, build manifest를
+   내려받고 local에서 다음 명령으로 checksum을 확인한다.
+   `shasum -a 256 -c LlmCore.xcframework.zip.sha256`.
+5. workflow URL, source commit, manifest, checksum을 Phase 2 결과로 기록한다.
+   이 build를 iPad 설치나 Metal runtime 활성화의 증거로 취급하지 않는다.
+
+configuration-file discovery, runner allocation, quota 때문에 run할 수 없으면
+credential을 issue에 복사하지 말고 UI error와 build log URL만 기록한다. macOS
+runner를 사용할 수 있을 때만 manual GitHub Actions fallback을 쓰고, 그렇지 않으면
+source commit을 보존한 채 account 문제가 해소된 뒤 Codemagic을 재시도한다.
+
+### Phase 3 native probe: local setup, build, and iPad installation
+
+Phase 3는 local Xcode/device 작업이다. runnable iPad application에는 Apple ID,
+등록된 device, Xcode-managed signing이 필요하므로 unsigned artifact workflow가
+수행하지 않는다. 재현 가능한 probe source는 `native/probe/`에 두며, commit되는
+project에는 model이나 signing material을 넣지 않는다.
+
+1. Codemagic에서 Phase 2 `LlmCore.xcframework.zip`과 checksum을 내려받는다.
+   사용 전 `shasum -a 256 -c LlmCore.xcframework.zip.sha256`로 확인한다.
+2. Xcode가 설치된 Mac에서
+   `bash scripts/prepare-native-probe.sh /absolute/path/LlmCore.xcframework.zip`
+   를 실행한다. script는 XCFramework를 ignored
+   `native/probe/Vendor/LlmCore.xcframework`에 import하며 기존 artifact를
+   덮어쓰지 않는다.
+3. `bash scripts/generate-native-probe-project.sh`를 실행한 뒤 Xcode에서
+   `native/probe/out/iphoneos/HaruChatNativeProbe.xcodeproj`를 열고
+   **HaruChatNativeProbe** target의 Signing & Capabilities에서 사용 가능한
+   Personal Team 또는 paid Developer Program team을 선택한다. 이 probe에는
+   capability 추가, manual profile, distribution signing을 설정하지 않는다.
+4. M4 iPad를 cable 또는 trusted network로 연결하고 unlock한 뒤 Xcode run
+   destination으로 선택한다. 요청되면 iPad에서 Developer Mode를 켜고 development
+   certificate를 trust한 후 Run을 누른다. 이것이 device-install gate다.
+5. app에서 **Choose GGUF**로 license가 확인된 model을 sandbox로 import하고
+   **Load Model**을 누른다. text를 입력한 뒤 **Generate**를 누르면 response 영역은
+   token payload를 누적하고 log는 event code, terminal flag, sequence,
+   UTF-8/base64 payload, metrics를 포함한 native `hc_llm_event` JSON 한 줄씩을
+   표시한다. model 교체 전에는 **Cancel**, **Reset**, **Unload**를 사용한다.
+6. Xcode run log와 app event log를 model filename/SHA-256, context size,
+   device/iPadOS, Xcode version, backend name, source commit과 함께 저장한다.
+   backend metadata가 `llama.cpp-metal`이고 response가 비어 있지 않은 것을 확인한 뒤에만
+   Phase 3 성공으로 기록한다.
+
+signing이 실패하면 Xcode error code와 provisioning message만 보존한다. `.xcuserdata`,
+provisioning profile, certificate, model, application container는 commit하지 않는다.
+Simulator compile은 project link만 확인하며 M4 iPad Metal runtime gate를 충족하지
+않는다.
+
 XCFramework 자체는 code signing하지 않는다. 첫 CI 목표는 재사용 가능한 **unsigned Apple native artifact**의 재현 가능한 생성이지, 서명된 IPA나 App Store/TestFlight 배포가 아니다. Codemagic secret에는 필요해지기 전까지 signing certificate나 provisioning profile을 추가하지 않는다.
 
 CI가 보장하는 항목:

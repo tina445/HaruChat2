@@ -47,6 +47,7 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 - **의존성:** Phase 1 native target과 pinned submodule. Unity Build Automation과 app code signing에는 의존하지 않는다.
 - **테스트:** Apple clang compile, Metal shader compile/link, expected device/simulator slices, exported `hc_llm_*`, clean checkout reproducibility와 consumer link.
 - **완료 조건:** pin된 source에서 unsigned `LlmCore.xcframework`를 반복 생성하며 Unity native plugin이 소비할 header/library/resource layout을 갖춘다.
+- **결과 기록:** CI artifact의 `build-manifest.txt`, SHA-256와 workflow run URL을 Phase 2 결과로 남긴다. 실기기 Metal 결과는 여기에 기록하지 않고 Phase 3 device probe 결과로 분리한다.
 - **예상 위험:** runner image/SDK 변화, CMake Apple option, Metal resource 누락, 무료 CI quota. image를 고정하고 Apple-specific 변경에만 job을 사용한다.
 
 ## Phase 3 — 최소 M4 iPad Native Probe

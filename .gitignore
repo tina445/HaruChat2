@@ -172,6 +172,13 @@ ExportedObj/
 **/bin/
 **/obj/
 
+# Reproducible CI/local Apple artifacts are published by CI, never committed.
+/artifacts/
+
+# Downloaded unsigned XCFramework used only by the local iPad probe.
+/native/probe/Vendor/
+/native/probe/out/
+
 # Unity3D generated meta files
 *.pidb.meta
 *.pdb.meta

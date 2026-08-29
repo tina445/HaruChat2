@@ -7,6 +7,13 @@ option(LLMCORE_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorS
 option(LLMCORE_DISABLE_LEAK_SANITIZER "Disable LeakSanitizer for ptrace-restricted runners" OFF)
 option(LLMCORE_ENABLE_LLAMA_CPP "Enable the pinned llama.cpp backend when its submodule is available" OFF)
 
+# The pinned Metal backend contains Objective-C implementation files. Keep
+# that language out of the Linux build, where it is neither required nor
+# universally available.
+if(APPLE AND LLMCORE_ENABLE_LLAMA_CPP)
+  enable_language(OBJC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -16,7 +23,16 @@ if(ANDROID AND NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
   message(FATAL_ERROR "HaruChat's prepared Android target supports arm64-v8a only")
 endif()
 
-add_library(llmcore SHARED
+# iOS artifacts are static archives. The Apple packaging script merges this
+# wrapper archive with its pinned llama.cpp archives before creating the
+# XCFramework, so consumers receive one linkable library per platform slice.
+if(APPLE AND CMAKE_OSX_SYSROOT MATCHES "[iI][pP][hH][oO][nN][eE]")
+  set(LLMCORE_LIBRARY_TYPE STATIC)
+else()
+  set(LLMCORE_LIBRARY_TYPE SHARED)
+endif()
+
+add_library(llmcore ${LLMCORE_LIBRARY_TYPE}
   llmcore/src/hc_llm.cpp
 )
 add_library(HaruChat::llmcore ALIAS llmcore)

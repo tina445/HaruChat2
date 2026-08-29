@@ -435,7 +435,11 @@ hc_llm_status hc_llm_runtime_get_metadata(const hc_llm_runtime *runtime, hc_llm_
   out_metadata->abi_version = HC_LLM_ABI_VERSION;
   out_metadata->capability_flags = kCapabilityPolling | kCapabilityCancellation | kCapabilityMockBackend;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
+#if defined(__APPLE__)
+  copy_text(out_metadata->backend_name, sizeof(out_metadata->backend_name), "llama.cpp-metal");
+#else
   copy_text(out_metadata->backend_name, sizeof(out_metadata->backend_name), "llama.cpp");
+#endif
 #else
   copy_text(out_metadata->backend_name, sizeof(out_metadata->backend_name), "bootstrap-mock");
 #endif
@@ -500,7 +504,13 @@ hc_llm_status hc_llm_model_load(hc_llm_runtime *runtime, const char *path_utf8,
   model->runtime = runtime;
   model->path = path_utf8;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
-  model->native_model = llama_model_load_from_file(path_utf8, llama_model_default_params());
+  llama_model_params params = llama_model_default_params();
+#if defined(__APPLE__)
+  // Device probes must exercise the Metal backend instead of silently falling
+  // back to CPU-only layers. Mobile sizing is a later profile/config concern.
+  params.n_gpu_layers = 999;
+#endif
+  model->native_model = llama_model_load_from_file(path_utf8, params);
   if (model->native_model == nullptr) {
     delete model;
     return HC_LLM_STATUS_IO_ERROR;
@@ -725,7 +735,14 @@ hc_llm_status hc_llm_job_destroy(hc_llm_job *job) {
   cancel_and_discard(job);
   join_job(job);
   clear_active_job(job);
+  hc_llm_runtime *runtime = job->runtime;
   job->alive.store(false);
+  {
+    std::lock_guard<std::mutex> lock(runtime->mutex);
+    auto &jobs = runtime->jobs;
+    jobs.erase(std::remove(jobs.begin(), jobs.end(), job), jobs.end());
+  }
+  delete job;
   return HC_LLM_STATUS_OK;
 }
 

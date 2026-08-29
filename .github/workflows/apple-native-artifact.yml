@@ -1,0 +1,27 @@
+name: Apple native artifact (fallback)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'tests/apple/**'
+      - 'scripts/build-apple-xcframework.sh'
+      - '.github/workflows/apple-native-artifact.yml'
+
+jobs:
+  xcframework:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build unsigned XCFramework
+        run: bash scripts/build-apple-xcframework.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LlmCore-xcframework
+          path: |
+            artifacts/apple/LlmCore.xcframework.zip
+            artifacts/apple/LlmCore.xcframework.zip.sha256
+            artifacts/apple/build-manifest.txt

@@ -142,6 +142,8 @@ int main() {
   drain_to_terminal(second, &terminals, &tokens);
   assert(tokens == "ok" && terminals == 1);
   assert(hc_llm_job_destroy(second) == HC_LLM_STATUS_OK);
+  // An explicitly destroyed job must no longer remain in runtime ownership;
+  // runtime teardown below is the regression check for double-free/UAF.
   assert(hc_llm_context_destroy(context) == HC_LLM_STATUS_OK);
   assert(hc_llm_context_reset(context) == HC_LLM_STATUS_INVALID_HANDLE);
   assert(hc_llm_model_unload(model) == HC_LLM_STATUS_OK);
