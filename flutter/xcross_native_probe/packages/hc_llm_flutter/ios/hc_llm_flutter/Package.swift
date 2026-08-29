@@ -3,7 +3,10 @@ import PackageDescription
 
 let package = Package(
   name: "hc_llm_flutter",
-  platforms: [.iOS(.v15)],
+  // xcross builds its generated plugin aggregate with iOS 13. The linked
+  // LlmCore artifact and this probe still require an iOS 15+ device; this
+  // declaration only prevents SwiftPM from rejecting the aggregate first.
+  platforms: [.iOS(.v13)],
   // xcross derives the SwiftPM product name from Flutter's hyphenated package
   // name, while the Swift target keeps its underscore identifier.
   products: [.library(name: "hc-llm-flutter", targets: ["hc_llm_flutter"])],
