@@ -255,7 +255,9 @@ delivery 수단이 아니며, Apple/xcross의 지원 상태가 바뀌면 Xcode h
    주입하는 별도 승인 범위다.
 4. repository root에서 `bash scripts/prepare-xcross-native-probe.sh
    /absolute/path/LlmCore.xcframework.zip`를 한 번 실행한다. artifact는 ignored
-   `flutter/xcross_native_probe/vendor/`에만 import되며 기존 import를 덮어쓰지 않는다.
+   `flutter/xcross_native_probe/packages/hc_llm_flutter/ios/hc_llm_flutter/Vendor/`에만
+   import되며 기존 import를 덮어쓰지 않는다. xcross가 plugin을 staging directory로
+   복사해 SwiftPM을 실행하므로, artifact를 app root가 아닌 plugin package에 둬야 한다.
 5. iPad를 unlock하고 Developer Mode를 켠 뒤 USB로 신뢰 연결한다. 매 reconnect 때
    `xcross tunnel`을 실행하고, `cd flutter/xcross_native_probe && flutter pub get &&
    xcross flutter run --usb`를 실행한다. Wi-Fi로 전환하려면 trusted USB pairing을 먼저

@@ -265,6 +265,8 @@ DerivedData/
 /native/probe/out/
 
 # xcross Flutter native probe generated/imported inputs
+/flutter/xcross_native_probe/packages/hc_llm_flutter/ios/hc_llm_flutter/Vendor/
+# Legacy import path used before plugin staging was accounted for.
 /flutter/xcross_native_probe/vendor/
 /flutter/xcross_native_probe/.dart_tool/
 /flutter/xcross_native_probe/build/

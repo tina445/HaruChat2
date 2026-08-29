@@ -6,7 +6,9 @@ let package = Package(
   platforms: [.iOS(.v15)],
   products: [.library(name: "hc_llm_flutter", targets: ["hc_llm_flutter"])],
   targets: [
-    .binaryTarget(name: "LlmCore", path: "../../../../vendor/LlmCore.xcframework"),
+    // xcross stages path plugins before invoking SwiftPM. Keep the artifact
+    // within this package so the relative binary target survives that staging.
+    .binaryTarget(name: "LlmCore", path: "Vendor/LlmCore.xcframework"),
     .target(
       name: "hc_llm_flutter",
       dependencies: ["LlmCore"],

@@ -10,7 +10,7 @@ artifact="$1"
 [[ -f "$artifact" ]] || { printf 'Artifact not found: %s\n' "$artifact" >&2; exit 2; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-vendor_dir="$repo_root/flutter/xcross_native_probe/vendor"
+vendor_dir="$repo_root/flutter/xcross_native_probe/packages/hc_llm_flutter/ios/hc_llm_flutter/Vendor"
 target="$vendor_dir/LlmCore.xcframework"
 [[ ! -e "$target" ]] || { printf 'Refusing to overwrite existing import: %s\n' "$target" >&2; exit 2; }
 
