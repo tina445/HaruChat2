@@ -10,7 +10,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for command_name in cmake ninja xcodebuild xcrun shasum zip lipo; do
+for command_name in cmake xcodebuild xcrun shasum zip lipo; do
   command -v "$command_name" >/dev/null || {
     printf 'Required command is missing: %s\n' "$command_name" >&2
     exit 1
@@ -36,7 +36,9 @@ configure_slice() {
   local build_dir="$build_root/$slice_name"
   local archive_dir="$package_root/$slice_name"
 
-  cmake -S native -B "$build_dir" -G Ninja \
+  # Use Xcode's generator: it is bundled with the required Apple SDK and avoids
+  # assuming that a hosted runner also preinstalls Ninja.
+  cmake -S native -B "$build_dir" -G Xcode \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \

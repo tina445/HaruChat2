@@ -146,6 +146,8 @@ Unity license 활성화는 개발자/CI 환경의 책임이며 credential을 저
 arm64-simulator slice를 빌드하고, `BUILD_SHARED_LIBS=OFF` static archive를
 합쳐 unsigned `LlmCore.xcframework`를 만든다. shader를 embed하므로 이후
 Unity plugin 경계에서 별도의 Metal resource를 복사하지 않는다.
+Apple script는 Xcode generator를 사용하므로 hosted runner에 Ninja가 설치돼 있을
+필요가 없다. Linux의 native validation은 기존처럼 Ninja를 사용한다.
 
 Codemagic은 `codemagic.yaml`의 primary Apple Silicon workflow를 실행한다.
 `.github/workflows/apple-native-artifact.yml`의 manual/PR GitHub Actions job은
