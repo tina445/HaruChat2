@@ -83,7 +83,7 @@ private final class ProbeEngine {
   init() {
     var options = hc_llm_runtime_options()
     options.struct_size = UInt32(MemoryLayout<hc_llm_runtime_options>.size)
-    options.abi_version = UInt32(HC_LLM_ABI_VERSION)
+    options.abi_version = hc_llm_bridge_abi_version()
     options.event_queue_capacity = 32
     if hc_llm_runtime_create(&options, &runtime) != HC_LLM_STATUS_OK { runtime = nil }
   }
@@ -102,18 +102,18 @@ private final class ProbeEngine {
       guard !path.isEmpty else { self.status("Choose a GGUF model first"); return }
       var options = hc_llm_model_load_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_model_load_options>.size)
-      options.abi_version = UInt32(HC_LLM_ABI_VERSION)
+      options.abi_version = hc_llm_bridge_abi_version()
       let status = path.withCString { hc_llm_model_load(runtime, $0, &options, &self.model) }
       guard status == HC_LLM_STATUS_OK, let model = self.model else { self.status("Load failed: \(message(status))"); return }
       var contextOptions = hc_llm_context_options()
       contextOptions.struct_size = UInt32(MemoryLayout<hc_llm_context_options>.size)
-      contextOptions.abi_version = UInt32(HC_LLM_ABI_VERSION)
+      contextOptions.abi_version = hc_llm_bridge_abi_version()
       contextOptions.context_size = 2048
       let contextStatus = hc_llm_context_create(model, &contextOptions, &self.context)
       guard contextStatus == HC_LLM_STATUS_OK else { self.unloadLocked(); self.status("Context failed: \(message(contextStatus))"); return }
       var metadata = hc_llm_runtime_metadata()
       metadata.struct_size = UInt32(MemoryLayout<hc_llm_runtime_metadata>.size)
-      metadata.abi_version = UInt32(HC_LLM_ABI_VERSION)
+      metadata.abi_version = hc_llm_bridge_abi_version()
       _ = hc_llm_runtime_get_metadata(runtime, &metadata)
       self.status("Loaded \(URL(fileURLWithPath: path).lastPathComponent) (\(string(&metadata.backend_name)))")
     }
@@ -124,7 +124,7 @@ private final class ProbeEngine {
       guard let context = self.context else { self.status("Load a GGUF model first"); return }
       var options = hc_llm_generation_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_generation_options>.size)
-      options.abi_version = UInt32(HC_LLM_ABI_VERSION)
+      options.abi_version = hc_llm_bridge_abi_version()
       options.max_tokens = 128
       let input = Array(prompt.utf8)
       let startStatus = input.withUnsafeBufferPointer { buffer in
@@ -138,7 +138,7 @@ private final class ProbeEngine {
       while true {
         var event = hc_llm_event()
         event.struct_size = UInt32(MemoryLayout<hc_llm_event>.size)
-        event.abi_version = UInt32(HC_LLM_ABI_VERSION)
+        event.abi_version = hc_llm_bridge_abi_version()
         let pollStatus = hc_llm_job_poll(job, &event)
         if pollStatus == HC_LLM_STATUS_WOULD_BLOCK { Thread.sleep(forTimeInterval: 0.01); continue }
         guard pollStatus == HC_LLM_STATUS_OK else { self.status("Poll failed: \(message(pollStatus))"); break }
