@@ -1,0 +1,16 @@
+name: haruchat_xcross_native_probe
+description: Flutter host used to verify the HaruChat C ABI on a physical iPad through xcross.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  hc_llm_flutter:
+    path: packages/hc_llm_flutter
+
+flutter:
+  uses-material-design: true

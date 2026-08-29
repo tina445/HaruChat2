@@ -85,6 +85,19 @@ xcodebuild -create-xcframework \
   -library "$package_root/ios-arm64-simulator/libLlmCore.a" -headers "$package_root/ios-arm64-simulator/Headers" \
   -output "$xcframework"
 
+# The Unity consumer only needs the public header, but the xcross Flutter host
+# imports this static XCFramework through SwiftPM. Ship an explicit Clang module
+# map so both consumers resolve the same hc_llm.h contract.
+for slice_name in ios-arm64 ios-arm64-simulator; do
+  modules_dir="$xcframework/$slice_name/Modules"
+  mkdir -p "$modules_dir"
+  printf '%s\n' \
+    'module LlmCore {' \
+    '  header "../Headers/hc_llm.h"' \
+    '  export *' \
+    '}' >"$modules_dir/module.modulemap"
+done
+
 simulator_library="$xcframework/ios-arm64-simulator/libLlmCore.a"
 simulator_headers="$xcframework/ios-arm64-simulator/Headers"
 xcrun --sdk iphonesimulator clang -fobjc-arc -arch arm64 -mios-simulator-version-min=15.0 \
@@ -97,8 +110,10 @@ for expected_path in \
   "$xcframework/Info.plist" \
   "$xcframework/ios-arm64/libLlmCore.a" \
   "$xcframework/ios-arm64/Headers/hc_llm.h" \
+  "$xcframework/ios-arm64/Modules/module.modulemap" \
   "$xcframework/ios-arm64-simulator/libLlmCore.a" \
-  "$xcframework/ios-arm64-simulator/Headers/hc_llm.h"; do
+  "$xcframework/ios-arm64-simulator/Headers/hc_llm.h" \
+  "$xcframework/ios-arm64-simulator/Modules/module.modulemap"; do
   [[ -e "$expected_path" ]] || { printf 'XCFramework content missing: %s\n' "$expected_path" >&2; exit 1; }
 done
 

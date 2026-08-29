@@ -227,6 +227,50 @@ provisioning profile, certificate, model, application container는 commit하지 
 Simulator compile은 project link만 확인하며 M4 iPad Metal runtime gate를 충족하지
 않는다.
 
+### Phase 3 alternative: Linux xcross Flutter host
+
+로컬 Mac/Xcode가 없지만 iPad 설치 경로를 먼저 검증해야 할 때는
+`flutter/xcross_native_probe/`를 사용할 수 있다. 이것은 **Phase 3 진단 host만**
+Flutter로 구현한 대안이며, 제품의 Unity Presentation/Live2D 방향이나 Core의 C ABI를
+바꾸지 않는다. Flutter plugin은 `hc_llm_*`만 호출하고 P2 `LlmCore.xcframework`를
+Swift Package binary target으로 link한다.
+
+이 경로는 [xcross](https://github.com/arxdeus/xcross)가 지원하는 Linux debug/JIT
+device build에 의존한다. 따라서 iOS 17 이상인 물리 iPad, Flutter SDK, Swift toolchain,
+LLVM(`clang`, `clang++`, `llvm-ar`, `ld64.lld`), Python 3, `pymobiledevice3`와 Apple ID로
+내려받은 완전한 `Xcode.xip`가 필요하다. xcross는 Xcode를 실행하지 않지만 SDK를
+추출해 사용하므로, archive와 추출된 SDK를 재배포하지 않는다. 이 경로는 release/AOT
+delivery 수단이 아니며, Apple/xcross의 지원 상태가 바뀌면 Xcode host 경로로 되돌린다.
+
+1. P2 artifact와 checksum을 내려받아 `shasum -a 256 -c
+   LlmCore.xcframework.zip.sha256`로 먼저 검증한다.
+2. Linux host에 Flutter, Swift 및 LLVM을 설치한 뒤 xcross의 공식 설치·SDK setup 문서를
+   따라 설치한다. Swift version을 확정한 뒤에만 `xcross sdk install
+   /absolute/path/Xcode.xip`를 실행한다. Swift version을 교체하면 SDK import를 다시
+   해야 한다.
+3. Apple 계정 인증은 `xcross auth --apple-id <development-only-Apple-ID>`로 대화형으로
+   수행한다. xcross는 free Apple ID도 지원한다고 설명하지만 nonstandard Apple login
+   flow를 사용하므로, 주 iCloud/purchase 계정이나 credential을 CI/source/log에 쓰지
+   않는다. 유료 Program의 CI 자동화는 App Store Connect API key를 secure storage에서만
+   주입하는 별도 승인 범위다.
+4. repository root에서 `bash scripts/prepare-xcross-native-probe.sh
+   /absolute/path/LlmCore.xcframework.zip`를 한 번 실행한다. artifact는 ignored
+   `flutter/xcross_native_probe/vendor/`에만 import되며 기존 import를 덮어쓰지 않는다.
+5. iPad를 unlock하고 Developer Mode를 켠 뒤 USB로 신뢰 연결한다. 매 reconnect 때
+   `xcross tunnel`을 실행하고, `cd flutter/xcross_native_probe && flutter pub get &&
+   xcross flutter run --usb`를 실행한다. Wi-Fi로 전환하려면 trusted USB pairing을 먼저
+   만든 뒤 `xcross tunnel --wifi`와 `xcross flutter run --wifi`를 사용한다.
+6. 앱에서 **Choose GGUF**로 라이선스가 확인된 model을 import한다. **Load** 후 backend
+   status가 `llama.cpp-metal`인지 확인하고, prompt를 입력해 **Generate**한다. Response와
+   Structured native event log가 모두 채워지고, Cancel → Reset → 재생성 → Unload/reload가
+   동작해야 Phase 3 결과로 기록한다.
+
+Flutter/xcross build 실패는 Xcode build 실패로 추정하지 않는다. xcross version, Flutter,
+Swift/LLVM, iPadOS, `Xcode.xip` version, run log와 app event log를 결과에 남긴다. P2
+artifact의 checksum, GGUF filename/SHA-256, context size, backend metadata와 source commit도
+함께 기록한다. profile, certificate, Apple session, extracted SDK, GGUF와 app container는
+commit하지 않는다.
+
 XCFramework 자체는 code signing하지 않는다. 첫 CI 목표는 재사용 가능한 **unsigned Apple native artifact**의 재현 가능한 생성이지, 서명된 IPA나 App Store/TestFlight 배포가 아니다. Codemagic secret에는 필요해지기 전까지 signing certificate나 provisioning profile을 추가하지 않는다.
 
 CI가 보장하는 항목:

@@ -54,12 +54,12 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 **목표:** Unity와 managed runtime 전에 실제 device에서 C ABI와 Metal runtime을 검증한다.
 
-- **구현 범위:** 최소 Objective-C++/Swift host 또는 Xcode sample에서 XCFramework를 load하고 runtime-configured GGUF로 load, generate, poll, cancel, reset, unload/reload를 실행한다. UI는 로그와 시작/취소 control 정도로 제한한다.
+- **구현 범위:** 기본 host는 최소 Objective-C++/Swift/Xcode sample이다. 로컬 Mac이 없을 때는 xcross가 지원하는 Flutter debug host를 대안으로 사용해 같은 XCFramework를 SwiftPM binary target으로 link할 수 있다. 어느 host든 runtime-configured GGUF로 load, generate, poll, cancel, reset, unload/reload를 실행하며 UI는 로그와 시작/취소 control 정도로 제한한다. Flutter host는 이 device probe에만 사용하며 Unity MVP Presentation을 대체하지 않는다.
 - **생성 파일/모듈:** disposable이 아닌 재현 가능한 native probe target, device checklist, model/profile/checksum을 포함한 결과 기록.
-- **의존성:** 사용자 소유 Apple signing feasibility Gate의 통과, Phase 2 XCFramework, 실제 M4 iPad와 라이선스가 확인된 Qwen GGUF.
+- **의존성:** 사용자 소유 Apple signing feasibility Gate의 통과, Phase 2 XCFramework, 실제 M4 iPad와 라이선스가 확인된 Qwen GGUF. xcross 대안은 iOS 17 이상, Flutter/Swift/LLVM/Xcode.xip SDK input과 development-only Apple ID를 추가로 요구한다.
 - **테스트:** Metal backend name/GPU offload 확인, non-empty ordered stream, cancel 후 재생성, context reset, 반복 generation, unload/reload, load time/TTFT/TPS/context/memory와 기본 pressure 관찰.
 - **완료 조건:** M4 iPad에서 Metal이 실제 활성화된 상태로 native lifecycle 전체가 동작하고 crash나 명백한 지속 메모리 증가가 없다. compile 성공이나 simulator 결과로 대체하지 않는다.
-- **예상 위험:** signing/provisioning, GGUF 반입, Metal runtime 미활성, memory/thermal pressure. 실패는 managed/Unity에서 우회하지 않고 native wrapper 또는 build 설정에서 해결한다.
+- **예상 위험:** signing/provisioning, GGUF 반입, Metal runtime 미활성, memory/thermal pressure, xcross의 debug/JIT 전용·third-party signing flow. 실패는 managed/Unity에서 우회하지 않고 native wrapper 또는 build 설정에서 해결한다.
 
 ## Phase 4 — Managed Model Abstraction Vertical Slice
 

@@ -1,0 +1,19 @@
+name: hc_llm_flutter
+description: Flutter platform bridge for the HaruChat native C ABI probe.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: HcLlmFlutterPlugin
+        dartPluginClass: HcLlmFlutter
