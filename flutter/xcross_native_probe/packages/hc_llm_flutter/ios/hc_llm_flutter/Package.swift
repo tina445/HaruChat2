@@ -4,7 +4,9 @@ import PackageDescription
 let package = Package(
   name: "hc_llm_flutter",
   platforms: [.iOS(.v15)],
-  products: [.library(name: "hc_llm_flutter", targets: ["hc_llm_flutter"])],
+  // xcross derives the SwiftPM product name from Flutter's hyphenated package
+  // name, while the Swift target keeps its underscore identifier.
+  products: [.library(name: "hc-llm-flutter", targets: ["hc_llm_flutter"])],
   targets: [
     // xcross stages path plugins before invoking SwiftPM. Keep the artifact
     // within this package so the relative binary target survives that staging.
