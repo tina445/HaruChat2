@@ -14,9 +14,21 @@ let package = Package(
     // xcross stages path plugins before invoking SwiftPM. Keep the artifact
     // within this package so the relative binary target survives that staging.
     .binaryTarget(name: "LlmCore", path: "Vendor/LlmCore.xcframework"),
+    // SwiftPM links a static-library XCFramework binary target but doesn't
+    // automatically make its C headers importable from Swift. This C target
+    // exposes the same header as a Clang module and retains the binary target.
+    .target(
+      name: "LlmCoreBridge",
+      dependencies: ["LlmCore"],
+      path: "Sources/LlmCoreBridge",
+      publicHeadersPath: "include",
+      cSettings: [
+        .headerSearchPath("../../../Vendor/LlmCore.xcframework/ios-arm64/Headers"),
+      ]
+    ),
     .target(
       name: "hc_llm_flutter",
-      dependencies: ["LlmCore"],
+      dependencies: ["LlmCore", "LlmCoreBridge"],
       path: "Sources/hc_llm_flutter",
       linkerSettings: [
         .linkedFramework("Accelerate"),

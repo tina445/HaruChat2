@@ -1,6 +1,6 @@
 import Flutter
 import Foundation
-import LlmCore
+import LlmCoreBridge
 import UIKit
 import UniformTypeIdentifiers
 
