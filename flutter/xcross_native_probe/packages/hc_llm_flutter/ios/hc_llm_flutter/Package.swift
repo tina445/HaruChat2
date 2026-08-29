@@ -21,10 +21,7 @@ let package = Package(
       name: "LlmCoreBridge",
       dependencies: ["LlmCore"],
       path: "Sources/LlmCoreBridge",
-      publicHeadersPath: "include",
-      cSettings: [
-        .headerSearchPath("../../../Vendor/LlmCore.xcframework/ios-arm64/Headers"),
-      ]
+      publicHeadersPath: "include"
     ),
     .target(
       name: "hc_llm_flutter",
