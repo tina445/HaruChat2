@@ -53,7 +53,11 @@ configure_slice() {
   mkdir -p "$archive_dir/Headers"
   cp native/llmcore/include/hc_llm.h "$archive_dir/Headers/"
 
-  mapfile -t static_archives < <(find "$build_dir" -type f -name '*.a' -print | sort)
+  # macOS ships Bash 3.x, which has no mapfile/readarray builtin.
+  static_archives=()
+  while IFS= read -r archive; do
+    static_archives+=("$archive")
+  done < <(find "$build_dir" -type f -name '*.a' -print | sort)
   if (( ${#static_archives[@]} == 0 )); then
     printf 'No static archives were generated for %s.\n' "$slice_name" >&2
     exit 1
