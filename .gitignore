@@ -269,6 +269,8 @@ DerivedData/
 /flutter/xcross_native_probe/.dart_tool/
 /flutter/xcross_native_probe/build/
 /flutter/xcross_native_probe/.flutter-plugins*
+/flutter/xcross_native_probe/ios/Flutter/
+/flutter/xcross_native_probe/ios/Runner/GeneratedPluginRegistrant.*
 
 # Project-wide agent guidance is shared and version-controlled.
 !AGENTS.md
