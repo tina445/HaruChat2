@@ -14,7 +14,12 @@ namespace HaruChat.Runtime.Characters
     public sealed class CharacterDefinition
     {
         public CharacterDefinition(string id, string displayName, string system, string? personality, string? style, string? scenario, IReadOnlyList<string> lore, IReadOnlyList<ModelMessage> examples, string contentHash)
-        { Id = id; DisplayName = displayName; System = system; Personality = personality; Style = style; Scenario = scenario; Lore = lore; Examples = examples; ContentHash = contentHash; }
+        {
+            Id = id; DisplayName = displayName; System = system; Personality = personality; Style = style; Scenario = scenario;
+            Lore = Array.AsReadOnly((lore ?? throw new ArgumentNullException(nameof(lore))).ToArray());
+            Examples = Array.AsReadOnly((examples ?? throw new ArgumentNullException(nameof(examples))).ToArray());
+            ContentHash = contentHash;
+        }
         public string Id { get; } public string DisplayName { get; } public string System { get; } public string? Personality { get; } public string? Style { get; } public string? Scenario { get; } public IReadOnlyList<string> Lore { get; } public IReadOnlyList<ModelMessage> Examples { get; } public string ContentHash { get; }
     }
 
@@ -25,12 +30,16 @@ namespace HaruChat.Runtime.Characters
         public CharacterDefinition Load(string root)
         {
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) throw new CharacterValidationException("Character root does not exist.");
-            var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var rootInfo = new DirectoryInfo(root);
+            if ((rootInfo.Attributes & FileAttributes.ReparsePoint) != 0) throw new CharacterValidationException("Symlinked character roots are not allowed.");
+            var canonicalRoot = Path.GetFullPath(root);
+            var fullRoot = canonicalRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             var consumed = 0;
             string Read(string name, bool required)
             {
                 var path = Path.GetFullPath(Path.Combine(fullRoot, name));
                 if (!path.StartsWith(fullRoot, StringComparison.Ordinal) || Path.IsPathRooted(name)) throw new CharacterValidationException("Path escapes character root: " + name);
+                EnsureNoReparsePoint(canonicalRoot, path);
                 if (!File.Exists(path)) { if (required) throw new CharacterValidationException("Required file is missing: " + name); return string.Empty; }
                 var info = new FileInfo(path);
                 if ((info.Attributes & FileAttributes.ReparsePoint) != 0) throw new CharacterValidationException("Symlinks are not allowed: " + name);
@@ -46,11 +55,26 @@ namespace HaruChat.Runtime.Characters
             if (Directory.Exists(lorePath))
             {
                 var loreInfo = new DirectoryInfo(lorePath); if ((loreInfo.Attributes & FileAttributes.ReparsePoint) != 0) throw new CharacterValidationException("Symlinked lore directory is not allowed.");
+                foreach (var entry in Directory.GetFileSystemEntries(lorePath))
+                {
+                    if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0) throw new CharacterValidationException("Symlinks are not allowed in lore.");
+                    if (Directory.Exists(entry)) throw new CharacterValidationException("Lore must contain files only.");
+                }
                 foreach (var file in Directory.GetFiles(lorePath, "*.md").OrderBy(x => Path.GetFileName(x), StringComparer.Ordinal)) lore.Add(Read(Path.Combine("lore", Path.GetFileName(file)), false));
             }
             var examples = ParseExamples(Read("examples.jsonl", false));
             var sections = new[] { manifest.Id, manifest.DisplayName, Read("system.md", true), Read("personality.md", false), Read("style.md", false), Read("scenario.md", false) }.Concat(lore).Concat(examples.Select(x => x.Role + ":" + x.Text));
             return new CharacterDefinition(manifest.Id, manifest.DisplayName, sections.ElementAt(2), EmptyToNull(sections.ElementAt(3)), EmptyToNull(sections.ElementAt(4)), EmptyToNull(sections.ElementAt(5)), lore.AsReadOnly(), examples.AsReadOnly(), Hash(string.Join("\n", sections)));
+        }
+        private static void EnsureNoReparsePoint(string root, string path)
+        {
+            var relative = path.Substring(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var current = root;
+            foreach (var segment in relative.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = Path.Combine(current, segment);
+                if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new CharacterValidationException("Symlinks are not allowed: " + relative);
+            }
         }
         private static string? EmptyToNull(string value) { return string.IsNullOrWhiteSpace(value) ? null : value; }
         private static string Hash(string value) { using (var sha = System.Security.Cryptography.SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-", string.Empty).ToLowerInvariant(); }
@@ -74,10 +98,44 @@ namespace HaruChat.Runtime.Characters
     }
     public sealed class CharacterValidationException : Exception { public CharacterValidationException(string message) : base(message) { } }
 
+    public sealed class CharacterCatalog
+    {
+        private readonly Dictionary<string, CharacterDefinition> _byId;
+        private readonly IReadOnlyList<CharacterDefinition> _characters;
+
+        public CharacterCatalog(IEnumerable<CharacterDefinition> characters)
+        {
+            if (characters == null) throw new ArgumentNullException(nameof(characters));
+            _byId = new Dictionary<string, CharacterDefinition>(StringComparer.OrdinalIgnoreCase);
+            var copy = new List<CharacterDefinition>();
+            foreach (var character in characters)
+            {
+                if (character == null || string.IsNullOrWhiteSpace(character.Id)) throw new CharacterValidationException("Character IDs must be non-empty.");
+                var normalizedId = character.Id.Normalize(NormalizationForm.FormC);
+                if (!_byId.TryAdd(normalizedId, character)) throw new CharacterValidationException("Duplicate character ID: " + character.Id);
+                copy.Add(character);
+            }
+            _characters = Array.AsReadOnly(copy.ToArray());
+        }
+
+        public IReadOnlyList<CharacterDefinition> Characters { get { return _characters; } }
+        public CharacterDefinition Get(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id) || !_byId.TryGetValue(id.Normalize(NormalizationForm.FormC), out var character)) throw new KeyNotFoundException("Unknown character ID: " + id);
+            return character;
+        }
+        public static CharacterCatalog Load(IEnumerable<string> bundleRoots, CharacterBundleLoader? loader = null)
+        {
+            if (bundleRoots == null) throw new ArgumentNullException(nameof(bundleRoots));
+            var actualLoader = loader ?? new CharacterBundleLoader();
+            return new CharacterCatalog(bundleRoots.Select(actualLoader.Load));
+        }
+    }
+
     public sealed class Conversation
     {
         private readonly List<ModelMessage> _committed = new List<ModelMessage>(); private ModelMessage? _pending;
-        public IReadOnlyList<ModelMessage> Committed { get { return _committed.AsReadOnly(); } }
+        public IReadOnlyList<ModelMessage> Committed { get { return Array.AsReadOnly(_committed.ToArray()); } }
         public void BeginUserTurn(string text) { if (_pending != null) throw new InvalidOperationException("A turn is already pending."); _pending = new ModelMessage(ModelRole.User, text); }
         public void CommitAssistant(string text) { if (_pending == null) throw new InvalidOperationException("No pending turn."); _committed.Add(_pending); _committed.Add(new ModelMessage(ModelRole.Assistant, text)); _pending = null; }
         public void RollbackPending() { _pending = null; }

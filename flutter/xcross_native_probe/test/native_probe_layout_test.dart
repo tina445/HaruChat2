@@ -15,8 +15,33 @@ void main() {
 
     expect(find.text('Choose GGUF'), findsOneWidget);
     expect(find.text('Load'), findsOneWidget);
+    expect(find.text('Character test bench'), findsOneWidget);
+    expect(find.text('Create & add'), findsOneWidget);
+    final list = find
+        .descendant(
+          of: find.byType(ListView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(find.text('Response'), 240, scrollable: list);
     expect(find.text('Response'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Structured native event log'),
+      240,
+      scrollable: list,
+    );
     expect(find.text('Structured native event log'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('character creation dialog validates a bundle draft', (tester) async {
+    await pumpProbe(tester, const Size(768, 1024));
+    await tester.tap(find.text('Create & add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create test character'), findsOneWidget);
+    expect(find.text('System instruction'), findsOneWidget);
+    await tester.tap(find.text('Create & add').last);
+    await tester.pump();
     expect(tester.takeException(), isNull);
   });
 

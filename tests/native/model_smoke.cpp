@@ -44,9 +44,16 @@ hc_llm_generation_options make_options(uint32_t max_tokens) {
   hc_llm_generation_options options{};
   options.struct_size = sizeof(options);
   options.abi_version = HC_LLM_ABI_VERSION;
-  options.prompt_utf8 = reinterpret_cast<const uint8_t *>("Reply briefly.");
-  options.prompt_bytes = static_cast<uint32_t>(std::strlen("Reply briefly."));
+  // This prompt deliberately spans multiple tokens; model-smoke creates an
+  // n_batch=1 context below to exercise chunked prompt evaluation.
+  static const char prompt[] = "Reply briefly. Answer with one word only.";
+  options.prompt_utf8 = reinterpret_cast<const uint8_t *>(prompt);
+  options.prompt_bytes = static_cast<uint32_t>(std::strlen(prompt));
   options.max_tokens = max_tokens;
+  options.temperature = 0.7F;
+  options.top_p = 0.9F;
+  options.top_k = 40;
+  options.seed = 42;
   return options;
 }
 
@@ -60,8 +67,12 @@ int main() {
   if (hc_llm_runtime_create(nullptr, &runtime) != HC_LLM_STATUS_OK) return 1;
   hc_llm_model *model = nullptr;
   if (hc_llm_model_load(runtime, path, nullptr, &model) != HC_LLM_STATUS_OK) return 2;
+  hc_llm_context_options context_options{};
+  context_options.struct_size = sizeof(context_options);
+  context_options.abi_version = HC_LLM_ABI_VERSION;
+  context_options.batch_size = 1;
   hc_llm_context *context = nullptr;
-  if (hc_llm_context_create(model, nullptr, &context) != HC_LLM_STATUS_OK) return 3;
+  if (hc_llm_context_create(model, &context_options, &context) != HC_LLM_STATUS_OK) return 3;
 
   hc_llm_job *generation = nullptr;
   hc_llm_generation_options generation_options = make_options(1);

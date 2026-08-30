@@ -47,14 +47,20 @@ bool valid_utf8(const uint8_t *bytes, uint32_t size) {
       ++i;
       continue;
     }
-    if ((first & 0xe0U) == 0xc0U) continuation = 1;
+    if (first >= 0xc2U && first <= 0xdfU) continuation = 1;
     else if ((first & 0xf0U) == 0xe0U) continuation = 2;
-    else if ((first & 0xf8U) == 0xf0U) continuation = 3;
+    else if (first >= 0xf0U && first <= 0xf4U) continuation = 3;
     else return false;
     if (i + continuation >= size) return false;
     for (uint32_t j = 1; j <= continuation; ++j) {
       if ((bytes[i + j] & 0xc0U) != 0x80U) return false;
     }
+    // Reject overlong encodings, surrogate code points, and values above
+    // U+10FFFF.  Accepting only continuation-byte shape is not UTF-8.
+    if ((first == 0xe0U && bytes[i + 1] < 0xa0U) ||
+        (first == 0xedU && bytes[i + 1] > 0x9fU) ||
+        (first == 0xf0U && bytes[i + 1] < 0x90U) ||
+        (first == 0xf4U && bytes[i + 1] > 0x8fU)) return false;
     i += continuation + 1;
   }
   return true;
@@ -332,14 +338,32 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
     publish_terminal(job, std::move(terminal));
     return;
   }
-  if (llama_decode(context, llama_batch_get_one(prompt_tokens.data(), count)) != 0) {
-    PendingEvent terminal{};
-    terminal.type = job->cancel_requested.load() ? HC_LLM_EVENT_CANCELLED : HC_LLM_EVENT_ERROR;
-    terminal.terminal = true;
-    terminal.sequence = ++sequence;
-    if (terminal.type == HC_LLM_EVENT_ERROR) terminal.payload = "prompt evaluation failed";
-    publish_terminal(job, std::move(terminal));
-    return;
+  // llama.cpp rejects a decode batch larger than n_batch.  Prompt length is
+  // unconstrained by that throughput setting, so evaluate it sequentially.
+  const uint32_t configured_batch = job->context->batch_size != 0
+      ? job->context->batch_size : llama_n_batch(context);
+  const uint32_t bounded_batch = std::min<uint32_t>(configured_batch,
+      static_cast<uint32_t>(INT32_MAX));
+  const int32_t prompt_batch = static_cast<int32_t>(std::max<uint32_t>(1U, bounded_batch));
+  for (int32_t offset = 0; offset < count; offset += prompt_batch) {
+    if (job->cancel_requested.load()) {
+      PendingEvent terminal{};
+      terminal.type = HC_LLM_EVENT_CANCELLED;
+      terminal.terminal = true;
+      terminal.sequence = ++sequence;
+      publish_terminal(job, std::move(terminal));
+      return;
+    }
+    const int32_t chunk = std::min(prompt_batch, count - offset);
+    if (llama_decode(context, llama_batch_get_one(prompt_tokens.data() + offset, chunk)) != 0) {
+      PendingEvent terminal{};
+      terminal.type = job->cancel_requested.load() ? HC_LLM_EVENT_CANCELLED : HC_LLM_EVENT_ERROR;
+      terminal.terminal = true;
+      terminal.sequence = ++sequence;
+      if (terminal.type == HC_LLM_EVENT_ERROR) terminal.payload = "prompt evaluation failed";
+      publish_terminal(job, std::move(terminal));
+      return;
+    }
   }
   llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (sampler == nullptr) {
@@ -439,7 +463,7 @@ hc_llm_status hc_llm_runtime_create(const hc_llm_runtime_options *options, hc_ll
   uint32_t capacity = kDefaultQueueCapacity;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-    if (options->struct_size < sizeof(*options) || options->event_queue_capacity == 0)
+    if (options->struct_size < sizeof(*options) || options->event_queue_capacity == 0 || options->reserved != 0)
       return HC_LLM_STATUS_INVALID_ARGUMENT;
     capacity = options->event_queue_capacity;
   }
@@ -525,7 +549,13 @@ hc_llm_status hc_llm_model_load(hc_llm_runtime *runtime, const char *path_utf8,
   *out_model = nullptr;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-    if (options->struct_size < sizeof(*options)) return HC_LLM_STATUS_INVALID_ARGUMENT;
+    if (options->struct_size < sizeof(*options) || options->reserved0 != 0 || options->reserved1 != 0)
+      return HC_LLM_STATUS_INVALID_ARGUMENT;
+  }
+  const size_t path_length = std::strlen(path_utf8);
+  if (path_length > UINT32_MAX || !valid_utf8(reinterpret_cast<const uint8_t *>(path_utf8),
+                                               static_cast<uint32_t>(path_length))) {
+    return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
   auto *model = new hc_llm_model();
   model->runtime = runtime;
@@ -614,7 +644,11 @@ hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_op
   *out_context = nullptr;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-    if (options->struct_size < HC_LLM_CONTEXT_OPTIONS_V1_SIZE) return HC_LLM_STATUS_INVALID_ARGUMENT;
+    if (options->struct_size < HC_LLM_CONTEXT_OPTIONS_V1_SIZE || options->reserved != 0 ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, reserved1),
+                            sizeof(options->reserved1)) && options->reserved1 != 0)) {
+      return HC_LLM_STATUS_INVALID_ARGUMENT;
+    }
   }
   auto *context = new hc_llm_context();
   context->runtime = model->runtime;
@@ -630,6 +664,10 @@ hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_op
   if (options != nullptr && has_trailing_field(options->struct_size,
       offsetof(hc_llm_context_options, batch_size), sizeof(options->batch_size))) {
     if (options->batch_size != 0) {
+      if (options->batch_size > params.n_ctx || options->batch_size > static_cast<uint32_t>(INT32_MAX)) {
+        delete context;
+        return HC_LLM_STATUS_INVALID_ARGUMENT;
+      }
       context->batch_size = options->batch_size;
       params.n_batch = options->batch_size;
     }
@@ -688,10 +726,16 @@ hc_llm_status hc_llm_job_start(hc_llm_context *context, const hc_llm_generation_
   if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
   if (options->struct_size < HC_LLM_GENERATION_OPTIONS_V1_SIZE || !valid_utf8(options->prompt_utf8, options->prompt_bytes) ||
       !valid_utf8(options->mock_response_utf8, options->mock_response_bytes)) return HC_LLM_STATUS_INVALID_ARGUMENT;
-  const bool has_sampling = has_trailing_field(options->struct_size,
+  const bool has_temperature = has_trailing_field(options->struct_size,
+      offsetof(hc_llm_generation_options, temperature), sizeof(options->temperature));
+  const bool has_top_p = has_trailing_field(options->struct_size,
+      offsetof(hc_llm_generation_options, top_p), sizeof(options->top_p));
+  const bool has_top_k = has_trailing_field(options->struct_size,
+      offsetof(hc_llm_generation_options, top_k), sizeof(options->top_k));
+  const bool has_seed = has_trailing_field(options->struct_size,
       offsetof(hc_llm_generation_options, seed), sizeof(options->seed));
-  if (has_sampling && (!std::isfinite(options->temperature) || options->temperature < 0.0F ||
-      !std::isfinite(options->top_p) || options->top_p < 0.0F || options->top_p > 1.0F)) {
+  if ((has_temperature && (!std::isfinite(options->temperature) || options->temperature < 0.0F)) ||
+      (has_top_p && (!std::isfinite(options->top_p) || options->top_p < 0.0F || options->top_p > 1.0F))) {
     return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
   std::string response = options->mock_response_bytes == 0
@@ -702,12 +746,10 @@ hc_llm_status hc_llm_job_start(hc_llm_context *context, const hc_llm_generation_
   job->runtime = context->runtime;
   job->context = context;
   job->queue_capacity = context->runtime->queue_capacity;
-  if (has_sampling) {
-    job->temperature = options->temperature;
-    job->top_p = options->top_p;
-    job->top_k = options->top_k;
-    job->seed = options->seed;
-  }
+  if (has_temperature) job->temperature = options->temperature;
+  if (has_top_p) job->top_p = options->top_p;
+  if (has_top_k) job->top_k = options->top_k;
+  if (has_seed) job->seed = options->seed;
   {
     std::lock_guard<std::mutex> lock(context->mutex);
     if (context->active_job != nullptr) {

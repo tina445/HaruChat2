@@ -53,24 +53,24 @@ typedef struct hc_llm_runtime_options {
   uint32_t struct_size;
   uint32_t abi_version;
   uint32_t event_queue_capacity;
-  uint32_t reserved;
+  uint32_t reserved; /* Must be zero. */
 } hc_llm_runtime_options;
 
 typedef struct hc_llm_model_load_options {
   uint32_t struct_size;
   uint32_t abi_version;
-  uint32_t reserved0;
-  uint32_t reserved1;
+  uint32_t reserved0; /* Must be zero. */
+  uint32_t reserved1; /* Must be zero. */
 } hc_llm_model_load_options;
 
 typedef struct hc_llm_context_options {
   uint32_t struct_size;
   uint32_t abi_version;
   uint32_t context_size;
-  uint32_t reserved;
+  uint32_t reserved; /* Must be zero. */
   /* Optional trailing fields. Older callers may omit them. */
   uint32_t batch_size; /* 0 uses the backend default. */
-  uint32_t reserved1;
+  uint32_t reserved1; /* Must be zero when supplied. */
 } hc_llm_context_options;
 
 typedef struct hc_llm_generation_options {

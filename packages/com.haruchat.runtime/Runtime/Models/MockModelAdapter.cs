@@ -26,6 +26,7 @@ namespace HaruChat.Runtime.Models
             }
             public Task ResetAsync(CancellationToken cancellationToken) { return Task.CompletedTask; }
             public Task<ModelUsage> GetUsageAsync(CancellationToken cancellationToken) { return Task.FromResult(_usage); }
+            public Task<ModelDiagnostics> GetDiagnosticsAsync(CancellationToken cancellationToken) { return Task.FromResult(new ModelDiagnostics("mock", null, null, null, null, null, null)); }
             public ValueTask DisposeAsync() { return default; }
         }
     }

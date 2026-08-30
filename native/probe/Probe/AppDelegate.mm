@@ -72,7 +72,7 @@ static NSString *StatusText(hc_llm_status status) {
   dispatch_async(_worker, ^{
     if (self.context == nullptr) { [self emitStatus:@"Load a GGUF model first"]; return; }
     NSData *input = [prompt dataUsingEncoding:NSUTF8StringEncoding];
-    hc_llm_generation_options options = {0}; options.struct_size = sizeof(options); options.abi_version = HC_LLM_ABI_VERSION;
+    hc_llm_generation_options options = {0}; options.struct_size = sizeof(options); options.abi_version = HC_LLM_ABI_VERSION; options.temperature = 0.7f; options.top_p = 0.9f; options.top_k = 40;
     options.prompt_utf8 = (const uint8_t *)input.bytes; options.prompt_bytes = (uint32_t)input.length; options.max_tokens = 128;
     hc_llm_job *job = nullptr;
     hc_llm_status status = hc_llm_job_start(self.context, &options, &job);

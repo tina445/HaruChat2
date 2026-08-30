@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../packages/com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" />
+    <ProjectReference Include="../../../packages/com.haruchat.llamacpp/HaruChat.LlamaCpp.csproj" />
   </ItemGroup>
 </Project>

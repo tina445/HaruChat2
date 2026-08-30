@@ -328,6 +328,32 @@ GGUF는 source code에 hard-code하거나 Git에 커밋하지 않는다. model c
 
 `.env`는 machine-local로만 사용하고 `.env.example`에는 빈 값과 설명만 둔다. CI secret은 Codemagic encrypted environment group에 저장하고 pull request build에는 노출하지 않는다. API key는 character bundle, `ModelProfile`, log, crash report 또는 SQLite memory에 저장하지 않으며, device에서는 platform secure-storage abstraction 뒤에 둔다.
 
+### P4/P5 headless character smoke
+
+`tools/headless`는 Unity 없이 Character bundle → PromptCompiler → adapter stream을 확인하는 진단 entry point다. 기본 실행은 deterministic mock adapter를 사용한다.
+
+```bash
+dotnet run --project tools/headless/HaruChat.Headless.csproj -- <character-bundle-dir> "안녕하세요"
+```
+
+다회차 선택 흐름은 v1 bundle을 하나의 catalog directory 아래에 두고 실행한다. 저장소의 `samples/characters/haru`는 schema와 loader smoke용 data-only sample이다.
+
+```bash
+dotnet run --project tools/headless/HaruChat.Headless.csproj -- \
+  --catalog samples/characters --character haru
+```
+
+실제 GGUF 경로는 native Linux build의 `libllmcore.so`를 library search path에 둔 뒤 model/profile을 함께 명시한다. GGUF와 machine-local 경로는 커밋하지 않는다.
+
+```bash
+LD_LIBRARY_PATH=native/out/linux-model \
+dotnet run --project tools/headless/HaruChat.Headless.csproj -- \
+  <character-bundle-dir> "안녕하세요" --model <absolute-gguf-path> \
+  --profile packages/com.haruchat.runtime/Profiles/qwen35.json
+```
+
+위 catalog 명령에도 `--model`과 `--profile`을 함께 붙여 local GGUF의 다회차 stream을 확인한다. GGUF fixture가 제공될 때 이 실행이 P5 local-adapter gate이며, fixture 자체는 저장소에 넣지 않는다.
+
 ## 8. 재현성과 진단
 
 - .NET dependency lock, Unity editor patch version, Xcode image, CMake options, submodule commit을 고정한다.
@@ -346,6 +372,15 @@ GGUF는 source code에 hard-code하거나 Git에 커밋하지 않는다. model c
 - Unity adapter 변경: managed test와 Unity EditMode test
 - SQLite schema 변경: migration upgrade/rollback이 아니라 forward migration, 빈 DB 및 이전 지원 version fixture test
 - Apple artifact 변경: unsigned XCFramework build와 최소 link smoke
+
+P4 managed/native 경계의 bootstrap integration test는 Linux native build 결과를 명시해 실행한다. 이는 GGUF를 저장소에 넣지 않고도 `LlamaCppBackend → hc_llm_* → LocalModelAdapter` lifecycle을 검증한다.
+
+```bash
+cmake -S native -B /tmp/haruchat-native -G Ninja -DLLMCORE_ENABLE_SANITIZERS=OFF
+cmake --build /tmp/haruchat-native
+HARUCHAT_LLMCORE_LIBRARY_DIR=/tmp/haruchat-native \
+dotnet run --project tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Runtime.Contracts.Tests.csproj -c Release
+```
 
 실제 device에서만 검증 가능한 Metal runtime, memory pressure, thermal behavior와 signing은 별도 device 결과로 표시한다.
 

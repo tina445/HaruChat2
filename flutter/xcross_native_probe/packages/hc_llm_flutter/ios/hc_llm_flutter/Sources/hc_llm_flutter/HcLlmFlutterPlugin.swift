@@ -126,6 +126,10 @@ private final class ProbeEngine {
       options.struct_size = UInt32(MemoryLayout<hc_llm_generation_options>.size)
       options.abi_version = hc_llm_bridge_abi_version()
       options.max_tokens = 128
+      options.temperature = 0.7
+      options.top_p = 0.9
+      options.top_k = 40
+      options.seed = UInt32.random(in: UInt32.min...UInt32.max)
       let input = Array(prompt.utf8)
       let startStatus = input.withUnsafeBufferPointer { buffer in
         options.prompt_utf8 = buffer.baseAddress

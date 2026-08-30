@@ -74,6 +74,10 @@ int main() {
   runtime_options.struct_size = sizeof(runtime_options);
   runtime_options.abi_version = HC_LLM_ABI_VERSION;
   runtime_options.event_queue_capacity = 1;
+  hc_llm_runtime_options reserved_runtime_options = runtime_options;
+  reserved_runtime_options.reserved = 1;
+  hc_llm_runtime *reserved_runtime = nullptr;
+  assert(hc_llm_runtime_create(&reserved_runtime_options, &reserved_runtime) == HC_LLM_STATUS_INVALID_ARGUMENT);
   hc_llm_runtime *runtime = nullptr;
   assert(hc_llm_runtime_create(&runtime_options, &runtime) == HC_LLM_STATUS_OK);
 
@@ -86,6 +90,13 @@ int main() {
   hc_llm_model *model = nullptr;
   assert(hc_llm_model_load(runtime, "/does/not/exist.gguf", nullptr, &model) == HC_LLM_STATUS_IO_ERROR);
   const std::string fixture = make_gguf_fixture();
+  hc_llm_model_load_options reserved_load_options{};
+  reserved_load_options.struct_size = sizeof(reserved_load_options);
+  reserved_load_options.abi_version = HC_LLM_ABI_VERSION;
+  reserved_load_options.reserved0 = 1;
+  assert(hc_llm_model_load(runtime, fixture.c_str(), &reserved_load_options, &model) == HC_LLM_STATUS_INVALID_ARGUMENT);
+  const char invalid_path[] = {'G', static_cast<char>(0xc0), static_cast<char>(0x80), '\0'};
+  assert(hc_llm_model_load(runtime, invalid_path, nullptr, &model) == HC_LLM_STATUS_INVALID_ARGUMENT);
   assert(hc_llm_model_load(runtime, fixture.c_str(), nullptr, &model) == HC_LLM_STATUS_OK);
   uint32_t required = 0;
   assert(hc_llm_model_get_path(model, nullptr, 0, &required) == HC_LLM_STATUS_OK);
@@ -110,6 +121,10 @@ int main() {
   context_options.abi_version = HC_LLM_ABI_VERSION;
   context_options.batch_size = 16;
   assert(hc_llm_context_create(model, &context_options, &context) == HC_LLM_STATUS_OK);
+  hc_llm_context_options reserved_context_options = context_options;
+  reserved_context_options.reserved1 = 1;
+  hc_llm_context *reserved_context = nullptr;
+  assert(hc_llm_context_create(model, &reserved_context_options, &reserved_context) == HC_LLM_STATUS_INVALID_ARGUMENT);
   assert(hc_llm_model_unload(model) == HC_LLM_STATUS_BUSY);
 
   hc_llm_job *job = start(context, u8"가나다");
@@ -142,6 +157,28 @@ int main() {
   drain_to_terminal(legacy_job, &terminals, &tokens);
   assert(tokens == legacy_response && terminals == 1);
   assert(hc_llm_job_destroy(legacy_job) == HC_LLM_STATUS_OK);
+
+  // Strict UTF-8 rejects malformed, overlong, surrogate, and out-of-range input.
+  const uint8_t invalid_utf8[][4] = {
+      {0xc0U, 0x80U, 0, 0}, {0xedU, 0xa0U, 0x80U, 0}, {0xf4U, 0x90U, 0x80U, 0}};
+  for (const auto &invalid : invalid_utf8) {
+    hc_llm_generation_options invalid_options{};
+    invalid_options.struct_size = sizeof(invalid_options);
+    invalid_options.abi_version = HC_LLM_ABI_VERSION;
+    invalid_options.prompt_utf8 = invalid;
+    invalid_options.prompt_bytes = invalid[0] == 0xc0U ? 2U : 3U;
+    hc_llm_job *invalid_job = nullptr;
+    assert(hc_llm_job_start(context, &invalid_options, &invalid_job) == HC_LLM_STATUS_INVALID_ARGUMENT);
+  }
+  hc_llm_generation_options invalid_sampling{};
+  invalid_sampling.struct_size = sizeof(invalid_sampling);
+  invalid_sampling.abi_version = HC_LLM_ABI_VERSION;
+  invalid_sampling.temperature = -0.1F;
+  hc_llm_job *invalid_sampling_job = nullptr;
+  assert(hc_llm_job_start(context, &invalid_sampling, &invalid_sampling_job) == HC_LLM_STATUS_INVALID_ARGUMENT);
+  invalid_sampling.temperature = 0.7F;
+  invalid_sampling.top_p = 1.1F;
+  assert(hc_llm_job_start(context, &invalid_sampling, &invalid_sampling_job) == HC_LLM_STATUS_INVALID_ARGUMENT);
 
   hc_llm_job *cancelled = start(context, "this generation will be cancelled", 2);
   assert(hc_llm_job_cancel(cancelled) == HC_LLM_STATUS_OK);

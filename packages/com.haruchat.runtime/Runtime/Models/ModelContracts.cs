@@ -43,11 +43,12 @@ namespace HaruChat.Runtime.Models
         {
             if (messages == null || messages.Count == 0) throw new ArgumentException("At least one message is required.", nameof(messages));
             Messages = new List<ModelMessage>(messages).AsReadOnly();
-            Generation = generation ?? new GenerationOptions();
+            Generation = generation;
             CorrelationId = correlationId ?? Guid.NewGuid().ToString("N");
         }
         public IReadOnlyList<ModelMessage> Messages { get; }
-        public GenerationOptions Generation { get; }
+        /// <summary>Null delegates generation policy to the selected model profile/runtime configuration.</summary>
+        public GenerationOptions? Generation { get; }
         public string CorrelationId { get; }
     }
 
@@ -57,6 +58,15 @@ namespace HaruChat.Runtime.Models
         public long? PromptTokens { get; }
         public long? GeneratedTokens { get; }
         public TimeSpan? Elapsed { get; }
+    }
+
+    public sealed class ModelDiagnostics
+    {
+        public ModelDiagnostics(string backend, bool? accelerationEnabled, int? contextWindowTokens, TimeSpan? loadDuration, TimeSpan? timeToFirstToken, double? promptTokensPerSecond, double? generationTokensPerSecond)
+        { Backend = backend ?? string.Empty; AccelerationEnabled = accelerationEnabled; ContextWindowTokens = contextWindowTokens; LoadDuration = loadDuration; TimeToFirstToken = timeToFirstToken; PromptTokensPerSecond = promptTokensPerSecond; GenerationTokensPerSecond = generationTokensPerSecond; }
+        public string Backend { get; } public bool? AccelerationEnabled { get; } public int? ContextWindowTokens { get; }
+        public TimeSpan? LoadDuration { get; } public TimeSpan? TimeToFirstToken { get; }
+        public double? PromptTokensPerSecond { get; } public double? GenerationTokensPerSecond { get; }
     }
 
     public sealed class ModelError
@@ -85,8 +95,8 @@ namespace HaruChat.Runtime.Models
 
     public sealed class ModelCapabilities
     {
-        public ModelCapabilities(bool streaming = true, bool cancellation = true, bool tools = false) { Streaming = streaming; Cancellation = cancellation; Tools = tools; }
-        public bool Streaming { get; } public bool Cancellation { get; } public bool Tools { get; }
+        public ModelCapabilities(bool streaming = true, bool cancellation = true, bool tools = false, bool reasoning = false) { Streaming = streaming; Cancellation = cancellation; Tools = tools; Reasoning = reasoning; }
+        public bool Streaming { get; } public bool Cancellation { get; } public bool Tools { get; } public bool Reasoning { get; }
     }
 
     public sealed class ModelSessionOptions
@@ -107,6 +117,7 @@ namespace HaruChat.Runtime.Models
         IAsyncEnumerable<ModelEvent> GenerateAsync(ModelRequest request, CancellationToken cancellationToken);
         Task ResetAsync(CancellationToken cancellationToken);
         Task<ModelUsage> GetUsageAsync(CancellationToken cancellationToken);
+        Task<ModelDiagnostics> GetDiagnosticsAsync(CancellationToken cancellationToken);
     }
 
     public sealed class ModelRouter
@@ -122,7 +133,7 @@ namespace HaruChat.Runtime.Models
         }
         public IModelAdapter Resolve(string id)
         {
-            if (id == null || !_adapters.TryGetValue(id, out var adapter)) throw new KeyNotFoundException("No model adapter is registered for '" + id + "'.");
+            if (id == null || !_adapters.TryGetValue(id, out var adapter)) throw new ModelOperationException(ModelErrorCode.NotFound, "No model adapter is registered for '" + id + "'.");
             return adapter;
         }
     }
