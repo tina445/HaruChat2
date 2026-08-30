@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -24,6 +26,10 @@ constexpr uint32_t kDefaultQueueCapacity = 32;
 constexpr uint32_t kCapabilityPolling = 1U << 0U;
 constexpr uint32_t kCapabilityCancellation = 1U << 1U;
 constexpr uint32_t kCapabilityMockBackend = 1U << 2U;
+
+bool has_trailing_field(uint32_t struct_size, size_t offset, size_t field_size) {
+  return struct_size >= offset + field_size;
+}
 
 struct HandleHeader {
   uint64_t magic = kMagic;
@@ -106,6 +112,7 @@ struct hc_llm_context : HandleHeader {
   hc_llm_job *active_job = nullptr;
   std::atomic<bool> abort_requested{false};
   uint64_t reset_count = 0;
+  uint32_t batch_size = 0;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
   llama_context *native_context = nullptr;
 #endif
@@ -132,6 +139,10 @@ struct hc_llm_job : HandleHeader {
   std::atomic<bool> cancel_requested{false};
   std::atomic<bool> worker_finished{false};
   std::string last_payload;
+  float temperature = 0.0F;
+  float top_p = 0.0F;
+  uint32_t top_k = 0;
+  uint32_t seed = 0;
 };
 
 namespace {
@@ -331,7 +342,23 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
     return;
   }
   llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-  llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+  if (sampler == nullptr) {
+    PendingEvent terminal{};
+    terminal.type = HC_LLM_EVENT_ERROR;
+    terminal.terminal = true;
+    terminal.sequence = ++sequence;
+    terminal.payload = "sampler initialization failed";
+    publish_terminal(job, std::move(terminal));
+    return;
+  }
+  if (job->temperature <= 0.0F) {
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+  } else {
+    if (job->top_k != 0) llama_sampler_chain_add(sampler, llama_sampler_init_top_k(static_cast<int32_t>(job->top_k)));
+    if (job->top_p > 0.0F && job->top_p < 1.0F) llama_sampler_chain_add(sampler, llama_sampler_init_top_p(job->top_p, 1));
+    llama_sampler_chain_add(sampler, llama_sampler_init_temp(job->temperature));
+    llama_sampler_chain_add(sampler, llama_sampler_init_dist(job->seed));
+  }
   std::string pending_utf8;
   const uint32_t limit = max_tokens == 0 ? 64U : max_tokens;
   bool decode_failed = false;
@@ -587,7 +614,7 @@ hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_op
   *out_context = nullptr;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-    if (options->struct_size < sizeof(*options)) return HC_LLM_STATUS_INVALID_ARGUMENT;
+    if (options->struct_size < HC_LLM_CONTEXT_OPTIONS_V1_SIZE) return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
   auto *context = new hc_llm_context();
   context->runtime = model->runtime;
@@ -599,6 +626,13 @@ hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_op
   if (options != nullptr && options->context_size != 0) {
     params.n_ctx = options->context_size;
     params.n_batch = std::min<uint32_t>(params.n_batch, params.n_ctx);
+  }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, batch_size), sizeof(options->batch_size))) {
+    if (options->batch_size != 0) {
+      context->batch_size = options->batch_size;
+      params.n_batch = options->batch_size;
+    }
   }
   context->native_context = llama_init_from_model(model->native_model, params);
   if (context->native_context == nullptr) {
@@ -652,8 +686,14 @@ hc_llm_status hc_llm_job_start(hc_llm_context *context, const hc_llm_generation_
   if (!valid_context(context) || options == nullptr || out_job == nullptr) return HC_LLM_STATUS_INVALID_ARGUMENT;
   *out_job = nullptr;
   if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-  if (options->struct_size < sizeof(*options) || !valid_utf8(options->prompt_utf8, options->prompt_bytes) ||
+  if (options->struct_size < HC_LLM_GENERATION_OPTIONS_V1_SIZE || !valid_utf8(options->prompt_utf8, options->prompt_bytes) ||
       !valid_utf8(options->mock_response_utf8, options->mock_response_bytes)) return HC_LLM_STATUS_INVALID_ARGUMENT;
+  const bool has_sampling = has_trailing_field(options->struct_size,
+      offsetof(hc_llm_generation_options, seed), sizeof(options->seed));
+  if (has_sampling && (!std::isfinite(options->temperature) || options->temperature < 0.0F ||
+      !std::isfinite(options->top_p) || options->top_p < 0.0F || options->top_p > 1.0F)) {
+    return HC_LLM_STATUS_INVALID_ARGUMENT;
+  }
   std::string response = options->mock_response_bytes == 0
       ? "mock response" : std::string(reinterpret_cast<const char *>(options->mock_response_utf8), options->mock_response_bytes);
   std::string prompt = options->prompt_bytes == 0 ? "Hello" :
@@ -662,6 +702,12 @@ hc_llm_status hc_llm_job_start(hc_llm_context *context, const hc_llm_generation_
   job->runtime = context->runtime;
   job->context = context;
   job->queue_capacity = context->runtime->queue_capacity;
+  if (has_sampling) {
+    job->temperature = options->temperature;
+    job->top_p = options->top_p;
+    job->top_k = options->top_k;
+    job->seed = options->seed;
+  }
   {
     std::lock_guard<std::mutex> lock(context->mutex);
     if (context->active_job != nullptr) {

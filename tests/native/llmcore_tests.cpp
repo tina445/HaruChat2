@@ -99,7 +99,17 @@ int main() {
   assert(std::strlen(model_metadata.description) > 0);
 
   hc_llm_context *context = nullptr;
-  assert(hc_llm_context_create(model, nullptr, &context) == HC_LLM_STATUS_OK);
+  hc_llm_context_options legacy_context_options{};
+  legacy_context_options.struct_size = HC_LLM_CONTEXT_OPTIONS_V1_SIZE;
+  legacy_context_options.abi_version = HC_LLM_ABI_VERSION;
+  assert(hc_llm_context_create(model, &legacy_context_options, &context) == HC_LLM_STATUS_OK);
+  assert(hc_llm_context_destroy(context) == HC_LLM_STATUS_OK);
+
+  hc_llm_context_options context_options{};
+  context_options.struct_size = sizeof(context_options);
+  context_options.abi_version = HC_LLM_ABI_VERSION;
+  context_options.batch_size = 16;
+  assert(hc_llm_context_create(model, &context_options, &context) == HC_LLM_STATUS_OK);
   assert(hc_llm_model_unload(model) == HC_LLM_STATUS_BUSY);
 
   hc_llm_job *job = start(context, u8"가나다");
@@ -118,6 +128,20 @@ int main() {
   assert(tokens == u8"가나다");
   assert(hc_llm_context_reset(context) == HC_LLM_STATUS_OK);
   assert(hc_llm_job_destroy(job) == HC_LLM_STATUS_OK);
+
+  hc_llm_generation_options legacy_generation{};
+  legacy_generation.struct_size = HC_LLM_GENERATION_OPTIONS_V1_SIZE;
+  legacy_generation.abi_version = HC_LLM_ABI_VERSION;
+  const char legacy_response[] = "legacy";
+  legacy_generation.mock_response_utf8 = reinterpret_cast<const uint8_t *>(legacy_response);
+  legacy_generation.mock_response_bytes = sizeof(legacy_response) - 1;
+  hc_llm_job *legacy_job = nullptr;
+  assert(hc_llm_job_start(context, &legacy_generation, &legacy_job) == HC_LLM_STATUS_OK);
+  terminals = 0;
+  tokens.clear();
+  drain_to_terminal(legacy_job, &terminals, &tokens);
+  assert(tokens == legacy_response && terminals == 1);
+  assert(hc_llm_job_destroy(legacy_job) == HC_LLM_STATUS_OK);
 
   hc_llm_job *cancelled = start(context, "this generation will be cancelled", 2);
   assert(hc_llm_job_cancel(cancelled) == HC_LLM_STATUS_OK);

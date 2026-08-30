@@ -8,7 +8,7 @@ cd "$repo_root"
 "$repo_root/scripts/verify-archlinux.sh"
 
 dotnet restore HaruChat.slnx --locked-mode
-dotnet build HaruChat.slnx -c Release --no-restore
+dotnet build HaruChat.slnx -c Release --no-restore -m:1
 dotnet test HaruChat.slnx -c Release --no-build
 dotnet run --project tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Runtime.Contracts.Tests.csproj \
   -c Release --no-build --no-restore

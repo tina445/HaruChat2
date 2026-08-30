@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>HaruChat.LlamaCpp</AssemblyName>
+    <RootNamespace>HaruChat.LlamaCpp</RootNamespace>
+    <LangVersion>8.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" /></ItemGroup>
+</Project>

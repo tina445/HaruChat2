@@ -1,5 +1,10 @@
 using HaruChat.Runtime.LocalModels;
+using HaruChat.Runtime.Models;
+using HaruChat.Runtime.Characters;
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,6 +15,10 @@ var tests = new (string Name, Action Run)[]
     ("Event owns its UTF-8 payload", EventPayloadIsCopied),
     ("Options preserve backend-neutral values", OptionsAreImmutable),
     ("Backend contract is implementable without Unity", BackendCanBeFaked),
+    ("Model router requires explicit unique selection", ModelRouterIsExplicit),
+    ("Prompt compiler retains recent conversation within budget", PromptCompilerPreservesRecentTurns),
+    ("Character chat commits only completed responses", CharacterChatCommitsCompletedResponses),
+    ("Character bundle loader validates a minimal bundle", CharacterBundleLoads),
 };
 
 foreach (var test in tests)
@@ -56,6 +65,55 @@ static void BackendCanBeFaked()
     var runtime = backend.CreateRuntimeAsync(new LocalRuntimeOptions(), CancellationToken.None).GetAwaiter().GetResult();
     Assert(runtime.IsSuccess && runtime.Value.IsValid, "test backend must satisfy contract");
     backend.DisposeAsync().GetAwaiter().GetResult();
+}
+
+static void ModelRouterIsExplicit()
+{
+    var router = new ModelRouter(new[] { new MockModelAdapter("mock") });
+    Assert(router.Resolve("mock").Id == "mock", "known adapter must resolve");
+    try { router.Resolve("unknown"); throw new InvalidOperationException("unknown adapter must fail"); }
+    catch (KeyNotFoundException) { }
+}
+
+static void PromptCompilerPreservesRecentTurns()
+{
+    var character = new CharacterDefinition("a", "A", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
+    var conversation = new Conversation();
+    conversation.BeginUserTurn("old question"); conversation.CommitAssistant("old answer");
+    conversation.BeginUserTurn("recent question"); conversation.CommitAssistant("recent answer");
+    var request = new PromptCompiler().Compile(character, conversation, "new input", 15);
+    Assert(request.Messages[request.Messages.Count - 1].Text == "new input", "latest user turn must remain");
+    Assert(request.Messages.Any(x => x.Text == "recent answer"), "recent complete turn must remain before older turns");
+}
+
+static void CharacterChatCommitsCompletedResponses()
+{
+    var character = new CharacterDefinition("a", "A", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
+    var conversation = new Conversation();
+    var adapter = new MockModelAdapter("mock", _ => new[] { ModelEvent.Token("hello"), ModelEvent.Completed() });
+    var session = adapter.CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    var service = new CharacterChatService(character, conversation, session, new PromptCompiler(), 128);
+    Consume(service.SendAsync("hi", CancellationToken.None)).GetAwaiter().GetResult();
+    Assert(conversation.Committed.Count == 2 && conversation.Committed[1].Text == "hello", "only completed assistant responses must commit");
+}
+
+static async Task Consume(IAsyncEnumerable<ModelEvent> events)
+{
+    await foreach (var ignored in events) { }
+}
+
+static void CharacterBundleLoads()
+{
+    var root = Path.Combine(Path.GetTempPath(), "haruchat-contract-" + Guid.NewGuid().ToString("N"), "sample");
+    Directory.CreateDirectory(root);
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "manifest.json"), "{\"schemaVersion\":1,\"id\":\"sample\",\"displayName\":\"샘플\"}");
+        File.WriteAllText(Path.Combine(root, "system.md"), "안녕하세요");
+        var value = new CharacterBundleLoader().Load(root);
+        Assert(value.Id == "sample" && value.System == "안녕하세요", "minimal strict UTF-8 bundle must load");
+    }
+    finally { Directory.Delete(Path.GetDirectoryName(root)!, true); }
 }
 
 static void Assert(bool condition, string message)

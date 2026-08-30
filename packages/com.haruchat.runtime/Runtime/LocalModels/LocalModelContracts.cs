@@ -153,14 +153,22 @@ namespace HaruChat.Runtime.LocalModels
 
     public sealed class LocalGenerationOptions
     {
-        public LocalGenerationOptions(string prompt, int maximumOutputTokens)
+        public LocalGenerationOptions(string prompt, int maximumOutputTokens, float temperature = 0.7f, int topK = 40, float topP = 0.9f, uint seed = 0)
         {
             Prompt = prompt ?? throw new ArgumentNullException(nameof(prompt));
             MaximumOutputTokens = maximumOutputTokens;
+            Temperature = temperature;
+            TopK = topK;
+            TopP = topP;
+            Seed = seed;
         }
 
         public string Prompt { get; }
         public int MaximumOutputTokens { get; }
+        public float Temperature { get; }
+        public int TopK { get; }
+        public float TopP { get; }
+        public uint Seed { get; }
     }
 
     public enum LocalBackendErrorCode

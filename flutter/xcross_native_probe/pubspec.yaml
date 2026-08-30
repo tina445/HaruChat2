@@ -12,5 +12,9 @@ dependencies:
   hc_llm_flutter:
     path: packages/hc_llm_flutter
 
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
 flutter:
   uses-material-design: true

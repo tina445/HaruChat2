@@ -7,6 +7,7 @@
  */
 
 #include <stdint.h>
+#include <stddef.h>
 
 #if defined(_WIN32) && defined(HC_LLM_BUILDING_LIBRARY)
 #  define HC_LLM_API __declspec(dllexport)
@@ -67,6 +68,9 @@ typedef struct hc_llm_context_options {
   uint32_t abi_version;
   uint32_t context_size;
   uint32_t reserved;
+  /* Optional trailing fields. Older callers may omit them. */
+  uint32_t batch_size; /* 0 uses the backend default. */
+  uint32_t reserved1;
 } hc_llm_context_options;
 
 typedef struct hc_llm_generation_options {
@@ -78,7 +82,16 @@ typedef struct hc_llm_generation_options {
   uint32_t mock_response_bytes;
   uint32_t max_tokens;
   uint32_t token_delay_ms;
+  /* Optional trailing fields. Older callers may omit them. */
+  float temperature; /* 0 selects deterministic greedy sampling. */
+  float top_p;       /* (0, 1]; 0 uses the backend default. */
+  uint32_t top_k;    /* 0 disables top-k filtering. */
+  uint32_t seed;     /* Used for non-greedy sampling. */
 } hc_llm_generation_options;
+
+/* Minimum caller-provided sizes accepted by ABI v1 implementations. */
+#define HC_LLM_CONTEXT_OPTIONS_V1_SIZE ((uint32_t) offsetof(hc_llm_context_options, batch_size))
+#define HC_LLM_GENERATION_OPTIONS_V1_SIZE ((uint32_t) offsetof(hc_llm_generation_options, temperature))
 
 typedef struct hc_llm_runtime_metadata {
   uint32_t struct_size;
