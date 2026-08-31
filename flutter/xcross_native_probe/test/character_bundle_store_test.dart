@@ -20,6 +20,8 @@ void main() {
     final listed = await store.list();
     expect(listed, hasLength(1));
     expect(listed.single.system, '항상 간결하게 안내합니다.');
+    expect(listed.single.personality, '친절함');
+    expect(listed.single.promptContext, contains('Personality:\n친절함'));
     expect(File('${created.path}/manifest.json').existsSync(), isTrue);
     expect(File('${created.path}/personality.md').existsSync(), isTrue);
   });

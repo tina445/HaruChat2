@@ -24,6 +24,8 @@ Profile의 최소 범위는 다음과 같다.
 
 명시적으로 선택한 profile ID가 있으면 metadata auto-match로 바꾸지 않는다. Profile이 없고 GGUF chat template metadata가 유효하면 generic profile로 제한적으로 실행할 수 있다. 안전한 request를 만들 수 없으면 family를 추측하지 않고 load 단계에서 actionable validation error를 반환한다.
 
+구현의 `ModelProfileCatalog`는 이 precedence를 composition root에서 적용한다. 명시 profile ID를 먼저 resolve하고, 없을 때만 `architectureContains` matcher가 정확히 하나인 profile을 선택한다. matcher가 없거나 복수이면 추측하지 않고 configuration 오류로 끝낸다.
+
 Profile은 JSON data로 version 관리하며 executable code, secret, model path나 character persona를 포함하지 않는다. Data로 표현할 수 없는 protocol 차이가 test로 증명될 때만 specialized `IModelAdapter`를 추가한다. `LlamaCppBackend`는 profile을 해석하지 않고 metadata와 inference primitive만 제공한다.
 
 ## Alternatives

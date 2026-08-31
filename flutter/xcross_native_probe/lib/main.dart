@@ -93,8 +93,14 @@ class _NativeProbePageState extends State<NativeProbePage> {
 
   String _probePrompt() {
     final character = _selectedCharacter;
-    if (character == null) return _prompt.text;
-    return 'System instruction:\n${character.system}\n\nUser:\n${_prompt.text}\n\nAssistant:';
+    final system = character?.promptContext ?? 'You are a concise, helpful assistant.';
+    final user = _prompt.text.trim();
+    // This diagnostic probe rebuilds one stateless ChatML request per Generate;
+    // it is not the P5 multi-turn Conversation runtime. The empty thinking block
+    // is Qwen's hard non-thinking switch.
+    return '<|im_start|>system\n$system<|im_end|>\n'
+        '<|im_start|>user\n$user<|im_end|>\n'
+        '<|im_start|>assistant\n<think>\n\n</think>\n\n';
   }
 
   Future<void> _refreshCharacters() async {

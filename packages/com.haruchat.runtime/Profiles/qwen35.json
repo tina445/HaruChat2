@@ -8,5 +8,7 @@
   "topK": 40,
   "topP": 0.9,
   "seed": null,
+  "disableThinking": true,
+  "architectureContains": ["qwen"],
   "stopSequences": []
 }

@@ -122,6 +122,9 @@ private final class ProbeEngine {
   func generate(prompt: String) {
     worker.async {
       guard let context = self.context else { self.status("Load a GGUF model first"); return }
+      // The probe submits a complete ChatML prompt per request. Reset first so
+      // previous raw prompt tokens cannot bias or duplicate the next response.
+      guard hc_llm_context_reset(context) == HC_LLM_STATUS_OK else { self.status("Context reset failed"); return }
       var options = hc_llm_generation_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_generation_options>.size)
       options.abi_version = hc_llm_bridge_abi_version()

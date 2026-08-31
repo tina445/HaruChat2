@@ -19,21 +19,27 @@ var tests = new (string Name, Action Run)[]
     ("Backend contract is implementable without Unity", BackendCanBeFaked),
     ("Model router requires explicit unique selection", ModelRouterIsExplicit),
     ("Local adapter streams normalized backend events", LocalAdapterStreamsNormalizedEvents),
+    ("Local adapter resets native context before full prompt replay", LocalAdapterResetsBeforeGeneration),
+    ("Local adapter exposes copied runtime diagnostics", LocalAdapterExposesRuntimeDiagnostics),
     ("Local adapter incrementally decodes split UTF-8 and stops", LocalAdapterDecodesSplitUtf8AndStops),
     ("Local adapter cancellation terminates without hanging", LocalAdapterCancellationTerminates),
     ("LlamaCpp backend consumes the C ABI bootstrap stream when configured", LlamaCppBackendConsumesBootstrapStream),
     ("Model profile validates and applies precedence", ModelProfileValidatesPrecedence),
+    ("Model profile catalog makes constrained metadata fallback explicit", ModelProfileCatalogResolvesSafely),
     ("Prompt compiler retains recent conversation within budget", PromptCompilerPreservesRecentTurns),
     ("Prompt compiler has deterministic section order and overflow", PromptCompilerOrderAndOverflow),
+    ("Prompt compiler gives character voice priority", PromptCompilerEnforcesCharacterVoice),
     ("Character chat commits only completed responses", CharacterChatCommitsCompletedResponses),
     ("Character chat rolls back incomplete responses", CharacterChatRollsBackIncompleteResponses),
     ("Character chat rolls back error terminal", CharacterChatRollsBackError),
     ("Character chat supports mock multi-turn streaming", CharacterChatSupportsMultiTurn),
     ("New conversation waits for an active send", NewConversationWaitsForActiveSend),
+    ("Character session replacement resets conversation and uses new session", CharacterSessionReplacementResetsConversation),
     ("Character bundle loader validates a minimal bundle", CharacterBundleLoads),
     ("Character catalog rejects normalized duplicate IDs", CharacterCatalogRejectsNormalizedDuplicates),
     ("Character bundle loader rejects symlinks", CharacterBundleRejectsSymlink),
     ("Character bundle rejects invalid content and traversal", CharacterBundleRejectsInvalidContent),
+    ("Character bundle loads case-insensitive Markdown lore", CharacterBundleLoadsUppercaseLore),
 };
 
 foreach (var test in tests)
@@ -118,6 +124,16 @@ static void ModelProfileValidatesPrecedence()
     try { _ = new ModelProfile("p", 1, "Qwen3.5", 64, defaults, new[] { "" }); throw new InvalidOperationException("empty stop must fail"); } catch (ArgumentException) { }
 }
 
+static void ModelProfileCatalogResolvesSafely()
+{
+    var qwen = new ModelProfile("qwen", 1, "Qwen3.5", 64, new GenerationOptions(), architectureContains: new[] { "qwen" });
+    var llama = new ModelProfile("llama", 1, "Qwen3.5", 64, new GenerationOptions(), architectureContains: new[] { "llama" });
+    var catalog = new ModelProfileCatalog(new[] { qwen, llama }); var metadata = new LocalModelMetadata("Qwen3ForCausalLM", 1024);
+    Assert(catalog.Resolve(null, metadata).Id == "qwen", "metadata fallback must select the unique compatible profile");
+    Assert(catalog.Resolve("llama", metadata).Id == "llama", "explicit profile binding must win over metadata");
+    try { _ = catalog.Resolve(null, new LocalModelMetadata("unknown", 1)); throw new InvalidOperationException("unknown metadata must not guess a profile"); } catch (ModelOperationException error) { Assert(error.Code == ModelErrorCode.InvalidConfiguration, "unsafe metadata fallback must be actionable"); }
+}
+
 static void LlamaCppBackendConsumesBootstrapStream()
 {
     var libraryDirectory = Environment.GetEnvironmentVariable("HARUCHAT_LLMCORE_LIBRARY_DIR");
@@ -148,13 +164,37 @@ static void LocalAdapterStreamsNormalizedEvents()
     session.DisposeAsync().GetAwaiter().GetResult();
 }
 
+static void LocalAdapterResetsBeforeGeneration()
+{
+    var backend = new StreamingBackend();
+    var adapter = new LocalModelAdapter("local", backend, new ModelConfig("/tmp/model.gguf", "qwen35"), new ModelProfile("qwen35", 1, "Qwen3.5", 128, new GenerationOptions(16)));
+    var session = adapter.CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    Consume(session.GenerateAsync(new ModelRequest(new[] { new ModelMessage(ModelRole.User, "one") }), CancellationToken.None)).GetAwaiter().GetResult();
+    Consume(session.GenerateAsync(new ModelRequest(new[] { new ModelMessage(ModelRole.User, "one"), new ModelMessage(ModelRole.Assistant, "answer"), new ModelMessage(ModelRole.User, "two") }), CancellationToken.None)).GetAwaiter().GetResult();
+    Assert(backend.ResetCount == 2, "each complete prompt snapshot must replace, not append to, native context");
+    session.DisposeAsync().GetAwaiter().GetResult();
+}
+
+static void LocalAdapterExposesRuntimeDiagnostics()
+{
+    var backend = new StreamingBackend();
+    var profile = new ModelProfile("qwen35", 1, "Qwen3.5", 128, new GenerationOptions(16), disableThinking: true);
+    var adapter = new LocalModelAdapter("local", backend, new ModelConfig("/tmp/model.gguf", "qwen35"), profile);
+    var session = adapter.CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    Consume(session.GenerateAsync(new ModelRequest(new[] { new ModelMessage(ModelRole.User, "hello") }), CancellationToken.None)).GetAwaiter().GetResult();
+    var diagnostics = session.GetDiagnosticsAsync(CancellationToken.None).GetAwaiter().GetResult();
+    Assert(diagnostics.Backend == "test-backend-metal" && diagnostics.AccelerationEnabled == true, "runtime metadata must flow through the managed adapter");
+    Assert(backend.LastGeneration!.Prompt.EndsWith("<think>\n\n</think>\n\n", StringComparison.Ordinal), "non-thinking is a profile-owned template policy");
+    session.DisposeAsync().GetAwaiter().GetResult();
+}
+
 static void PromptCompilerPreservesRecentTurns()
 {
     var character = new CharacterDefinition("a", "A", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
     var conversation = new Conversation();
     conversation.BeginUserTurn("old question"); conversation.CommitAssistant("old answer");
     conversation.BeginUserTurn("recent question"); conversation.CommitAssistant("recent answer");
-    var request = new PromptCompiler().Compile(character, conversation, "new input", 15);
+    var request = new PromptCompiler(new CharacterPromptPolicy(false, false)).Compile(character, conversation, "new input", 15);
     Assert(request.Messages[request.Messages.Count - 1].Text == "new input", "latest user turn must remain");
     Assert(request.Messages.Any(x => x.Text == "recent answer"), "recent complete turn must remain before older turns");
 }
@@ -162,9 +202,17 @@ static void PromptCompilerPreservesRecentTurns()
 static void PromptCompilerOrderAndOverflow()
 {
     var character = new CharacterDefinition("a", "A", "system", "personality", "style", "scenario", new[] { "lore" }, new[] { new ModelMessage(ModelRole.User, "example-user"), new ModelMessage(ModelRole.Assistant, "example-assistant") }, "hash");
-    var request = new PromptCompiler().Compile(character, new Conversation(), "latest", 128);
+    var request = new PromptCompiler(new CharacterPromptPolicy(false, false)).Compile(character, new Conversation(), "latest", 128);
     Assert(string.Join("|", request.Messages.Select(x => x.Text)) == "system|personality|style|scenario|lore|example-user|example-assistant|latest", "section order must be stable");
-    try { _ = new PromptCompiler().Compile(character, new Conversation(), "latest", 1); throw new InvalidOperationException("required prompt over budget must fail"); } catch (ContextBudgetExceededException) { }
+    try { _ = new PromptCompiler(new CharacterPromptPolicy(false, false)).Compile(character, new Conversation(), "latest", 1); throw new InvalidOperationException("required prompt over budget must fail"); } catch (ContextBudgetExceededException) { }
+}
+
+static void PromptCompilerEnforcesCharacterVoice()
+{
+    var character = new CharacterDefinition("a", "A", "system", "warm", "informal short sentences", null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
+    var plan = new PromptCompiler().CompilePlan(character, new Conversation(), "hello", 128);
+    Assert(plan.CompilerVersion == PromptCompiler.CompilerVersion && plan.CharacterId == "a", "prompt plan must preserve its character snapshot");
+    Assert(plan.Request.Messages.Any(x => x.Text.Contains("generic helpful-assistant voice", StringComparison.Ordinal)), "default policy must prioritize the declared character voice");
 }
 
 static void CharacterChatCommitsCompletedResponses()
@@ -224,6 +272,22 @@ static void NewConversationWaitsForActiveSend()
         Assert(conversation.Committed.Count == 0, "new conversation must clear the rolled-back conversation after reset");
     }
     finally { enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+}
+
+static void CharacterSessionReplacementResetsConversation()
+{
+    var first = new CharacterDefinition("first", "First", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "first-hash");
+    var second = new CharacterDefinition("second", "Second", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "second-hash");
+    var conversation = new Conversation();
+    var firstSession = new MockModelAdapter("first", _ => new[] { ModelEvent.Token("first"), ModelEvent.Completed() }).CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    var secondSession = new MockModelAdapter("second", _ => new[] { ModelEvent.Token("second"), ModelEvent.Completed() }).CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    var service = new CharacterChatService(first, conversation, firstSession, new PromptCompiler(), 128);
+    Consume(service.SendAsync("one", CancellationToken.None)).GetAwaiter().GetResult();
+    service.ReplaceSessionAsync(second, secondSession, 128, CancellationToken.None).GetAwaiter().GetResult();
+    Assert(conversation.Committed.Count == 0, "character/model switch must discard incompatible history");
+    var output = ConsumeText(service.SendAsync("two", CancellationToken.None)).GetAwaiter().GetResult();
+    Assert(output == "second" && conversation.Committed.Count == 2, "replacement must use the new session");
+    service.DisposeAsync().GetAwaiter().GetResult();
 }
 
 static async Task Consume(IAsyncEnumerable<ModelEvent> events)
@@ -289,6 +353,20 @@ static void CharacterBundleRejectsInvalidContent()
     finally { Directory.Delete(parent, true); }
 }
 
+static void CharacterBundleLoadsUppercaseLore()
+{
+    var parent = Path.Combine(Path.GetTempPath(), "haruchat-lore-" + Guid.NewGuid().ToString("N")); var root = Path.Combine(parent, "sample");
+    Directory.CreateDirectory(Path.Combine(root, "lore"));
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "manifest.json"), "{\"schemaVersion\":1,\"id\":\"sample\",\"displayName\":\"Sample\"}");
+        File.WriteAllText(Path.Combine(root, "system.md"), "system"); File.WriteAllText(Path.Combine(root, "lore", "FACT.MD"), "lore");
+        var definition = new CharacterBundleLoader().Load(root);
+        Assert(definition.Lore.Count == 1 && definition.Lore[0] == "lore", "accepted Markdown extensions must be loaded on every host filesystem");
+    }
+    finally { Directory.Delete(parent, true); }
+}
+
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
@@ -299,6 +377,7 @@ sealed class FakeLocalModelBackend : ILocalModelBackend
     public ValueTask DisposeAsync() => default;
     public Task<LocalBackendResult<LocalRuntimeHandle>> CreateRuntimeAsync(LocalRuntimeOptions options, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult<LocalRuntimeHandle>.Success(new LocalRuntimeHandle(1)));
     public Task<LocalBackendResult> DestroyRuntimeAsync(LocalRuntimeHandle runtime, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult.Success());
+    public Task<LocalBackendResult<LocalRuntimeMetadata>> GetRuntimeMetadataAsync(LocalRuntimeHandle runtime, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult<LocalRuntimeMetadata>.Success(new LocalRuntimeMetadata("fake", "test", true, true, true)));
     public Task<LocalBackendResult<LocalModelHandle>> LoadModelAsync(LocalRuntimeHandle runtime, LocalModelLoadOptions options, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult<LocalModelHandle>.Failure(LocalBackendErrorCode.Unsupported, "test fake"));
     public Task<LocalBackendResult> UnloadModelAsync(LocalModelHandle model, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult.Success());
     public Task<LocalBackendResult<LocalContextHandle>> CreateContextAsync(LocalModelHandle model, LocalContextOptions options, CancellationToken cancellationToken) => Task.FromResult(LocalBackendResult<LocalContextHandle>.Failure(LocalBackendErrorCode.Unsupported, "test fake"));
@@ -317,15 +396,17 @@ sealed class StreamingBackend : ILocalModelBackend
     private int _pollCount; private readonly IReadOnlyList<LocalBackendEvent>? _events;
     public StreamingBackend(IReadOnlyList<LocalBackendEvent>? events = null) { _events = events; }
     public LocalGenerationOptions? LastGeneration { get; private set; }
+    public int ResetCount { get; private set; }
     public ValueTask DisposeAsync() => default;
     public Task<LocalBackendResult<LocalRuntimeHandle>> CreateRuntimeAsync(LocalRuntimeOptions o, CancellationToken ct) => Task.FromResult(LocalBackendResult<LocalRuntimeHandle>.Success(new LocalRuntimeHandle(1)));
     public Task<LocalBackendResult> DestroyRuntimeAsync(LocalRuntimeHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());
+    public Task<LocalBackendResult<LocalRuntimeMetadata>> GetRuntimeMetadataAsync(LocalRuntimeHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult<LocalRuntimeMetadata>.Success(new LocalRuntimeMetadata("test-backend-metal", "test", true, true, false)));
     public Task<LocalBackendResult<LocalModelHandle>> LoadModelAsync(LocalRuntimeHandle h, LocalModelLoadOptions o, CancellationToken ct) => Task.FromResult(LocalBackendResult<LocalModelHandle>.Success(new LocalModelHandle(2)));
     public Task<LocalBackendResult> UnloadModelAsync(LocalModelHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());
     public Task<LocalBackendResult<LocalContextHandle>> CreateContextAsync(LocalModelHandle h, LocalContextOptions o, CancellationToken ct) => Task.FromResult(LocalBackendResult<LocalContextHandle>.Success(new LocalContextHandle(3)));
-    public Task<LocalBackendResult> ResetContextAsync(LocalContextHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());
+    public Task<LocalBackendResult> ResetContextAsync(LocalContextHandle h, CancellationToken ct) { ResetCount++; return Task.FromResult(LocalBackendResult.Success()); }
     public Task<LocalBackendResult> DestroyContextAsync(LocalContextHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());
-    public Task<LocalBackendResult<LocalGenerationHandle>> StartGenerationAsync(LocalContextHandle h, LocalGenerationOptions o, CancellationToken ct) { LastGeneration = o; return Task.FromResult(LocalBackendResult<LocalGenerationHandle>.Success(new LocalGenerationHandle(4))); }
+    public Task<LocalBackendResult<LocalGenerationHandle>> StartGenerationAsync(LocalContextHandle h, LocalGenerationOptions o, CancellationToken ct) { _pollCount = 0; LastGeneration = o; return Task.FromResult(LocalBackendResult<LocalGenerationHandle>.Success(new LocalGenerationHandle(4))); }
     public Task<LocalBackendResult<LocalEventBatch>> PollEventsAsync(LocalGenerationHandle h, int maximum, CancellationToken ct) { if (_pollCount++ == 0) return Task.FromResult(LocalBackendResult<LocalEventBatch>.Success(new LocalEventBatch(_events ?? new[] { new LocalBackendEvent(LocalBackendEventKind.Token, 1, System.Text.Encoding.UTF8.GetBytes("응답"), default, default), new LocalBackendEvent(LocalBackendEventKind.Completed, 2, Array.Empty<byte>(), default, default) }))); return Task.FromResult(LocalBackendResult<LocalEventBatch>.Success(new LocalEventBatch(Array.Empty<LocalBackendEvent>()))); }
     public Task<LocalBackendResult> CancelGenerationAsync(LocalGenerationHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());
     public Task<LocalBackendResult> DestroyGenerationAsync(LocalGenerationHandle h, CancellationToken ct) => Task.FromResult(LocalBackendResult.Success());

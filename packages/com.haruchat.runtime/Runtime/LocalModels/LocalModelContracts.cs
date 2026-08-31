@@ -21,6 +21,10 @@ namespace HaruChat.Runtime.LocalModels
             LocalRuntimeHandle runtime,
             CancellationToken cancellationToken);
 
+        Task<LocalBackendResult<LocalRuntimeMetadata>> GetRuntimeMetadataAsync(
+            LocalRuntimeHandle runtime,
+            CancellationToken cancellationToken);
+
         Task<LocalBackendResult<LocalModelHandle>> LoadModelAsync(
             LocalRuntimeHandle runtime,
             LocalModelLoadOptions options,
@@ -267,6 +271,25 @@ namespace HaruChat.Runtime.LocalModels
 
         public string Architecture { get; }
         public int ContextWindowTokens { get; }
+    }
+
+    /// <summary>Copied runtime diagnostics supplied by the native ABI; no native pointer escapes this boundary.</summary>
+    public sealed class LocalRuntimeMetadata
+    {
+        public LocalRuntimeMetadata(string backendName, string targetTriple, bool supportsPolling, bool supportsCancellation, bool isMockBackend)
+        {
+            BackendName = backendName ?? string.Empty;
+            TargetTriple = targetTriple ?? string.Empty;
+            SupportsPolling = supportsPolling;
+            SupportsCancellation = supportsCancellation;
+            IsMockBackend = isMockBackend;
+        }
+
+        public string BackendName { get; }
+        public string TargetTriple { get; }
+        public bool SupportsPolling { get; }
+        public bool SupportsCancellation { get; }
+        public bool IsMockBackend { get; }
     }
 
     public readonly struct LocalGenerationMetrics

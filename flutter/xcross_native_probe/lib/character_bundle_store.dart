@@ -37,12 +37,26 @@ class CharacterBundleSummary {
     required this.displayName,
     required this.system,
     required this.path,
+    this.personality = '',
+    this.style = '',
+    this.scenario = '',
   });
 
   final String id;
   final String displayName;
   final String system;
   final String path;
+  final String personality;
+  final String style;
+  final String scenario;
+
+  String get promptContext => [
+        system,
+        if (personality.trim().isNotEmpty) 'Personality:\n$personality',
+        if (style.trim().isNotEmpty) 'Speaking style:\n$style',
+        if (scenario.trim().isNotEmpty) 'Scenario:\n$scenario',
+        'Treat the declared personality and speaking style as binding. Do not substitute a generic assistant voice.',
+      ].join('\n\n');
 }
 
 /// Test-only writer for the fixed Character Bundle v1 directory layout.
@@ -72,6 +86,9 @@ class CharacterBundleStore {
           displayName: raw['displayName'] as String,
           system: await system.readAsString(),
           path: entry.path,
+          personality: await _readOptional(entry, 'personality.md'),
+          style: await _readOptional(entry, 'style.md'),
+          scenario: await _readOptional(entry, 'scenario.md'),
         ));
       } on FormatException {
         // Invalid local test data is intentionally omitted from the selector.
@@ -102,10 +119,24 @@ class CharacterBundleStore {
       if (await bundle.exists()) await bundle.delete(recursive: true);
       rethrow;
     }
-    return CharacterBundleSummary(id: draft.id, displayName: draft.displayName.trim(), system: draft.system.trim(), path: bundle.path);
+    return CharacterBundleSummary(
+      id: draft.id,
+      displayName: draft.displayName.trim(),
+      system: draft.system.trim(),
+      path: bundle.path,
+      personality: draft.personality.trim(),
+      style: draft.style.trim(),
+      scenario: draft.scenario.trim(),
+    );
   }
 
   Future<void> _writeOptional(Directory bundle, String name, String value) async {
     if (value.trim().isNotEmpty) await File('${bundle.path}/$name').writeAsString(value.trim());
+  }
+
+  Future<String> _readOptional(Directory bundle, String name) async {
+    final file = File('${bundle.path}/$name');
+    if (!await file.exists()) return '';
+    return file.readAsString();
   }
 }

@@ -169,7 +169,7 @@ LlamaCppBackend → hc_llm_* → llama.cpp
 - tool call 및 reasoning marker/parser 설정
 - tokenizer/template capability 요구사항
 
-`ModelProfile`은 GGUF path 자체나 비밀정보를 저장하지 않는다. 실제 모델 설치 정보는 runtime configuration의 path와 checksum으로 관리한다. profile은 load 전에 schema와 capability를 검증하며, profile을 바꾸는 동작은 기존 session/context를 폐기한 뒤 새 session을 만든다.
+`ModelProfile`은 GGUF path 자체나 비밀정보를 저장하지 않는다. 실제 모델 설치 정보는 runtime configuration의 path와 checksum으로 관리한다. profile은 load 전에 schema와 capability를 검증하며, profile을 바꾸는 동작은 기존 session/context를 폐기한 뒤 새 session을 만든다. `CharacterChatService.ReplaceSessionAsync`는 composition root가 만든 새 session을 직렬화하여 교체하고, active generation을 cancel한 뒤 기존 conversation을 reset한다. 따라서 model/profile/character state를 한 context에 섞지 않는다.
 
 `ILocalModelBackend`는 다음 기능에만 한정한다. M1은 runtime package에 이 port와 handle/options/event/metrics DTO 및 mock contract test를 선언할 수 있지만 native P/Invoke와 `LlamaCppBackend` concrete implementation은 Phase 4의 책임이다.
 
@@ -188,7 +188,7 @@ public interface ILocalModelBackend : IAsyncDisposable
 }
 ```
 
-handle은 managed 안전 wrapper이며 반드시 `IAsyncDisposable`/`SafeHandle` 계열 ownership을 갖는다. unload는 model handle dispose, context destroy는 context handle dispose로 표현한다. `LocalModelAdapter`는 `StartGenerationAsync → ReadEventsAsync → generation dispose`를 자신의 public `GenerateAsync` enumeration 수명 안에서 조정하고 cancellation token을 명시적 `CancelAsync` 호출로 연결한다. `LocalGenerationInput`은 이미 template이 적용된 text/tokenization 의도와 sampling option만 담는다. backend는 Qwen, 캐릭터, conversation, tool 이름을 알지 못한다.
+handle은 managed 안전 wrapper이며 반드시 `IAsyncDisposable`/`SafeHandle` 계열 ownership을 갖는다. unload는 model handle dispose, context destroy는 context handle dispose로 표현한다. `LocalModelAdapter`는 `StartGenerationAsync → ReadEventsAsync → generation dispose`를 자신의 public `GenerateAsync` enumeration 수명 안에서 조정하고 cancellation token을 명시적 `CancelAsync` 호출로 연결한다. 현재 local adapter는 `ModelRequest`의 완전한 conversation snapshot을 매 generation 직전에 native context reset 후 재평가한다. 따라서 conversation 기억의 source of truth는 native KV cache가 아니라 `Conversation`이며, history가 native context에 중복 누적되지 않는다. `LocalGenerationInput`은 이미 template이 적용된 text/tokenization 의도와 sampling option만 담는다. backend는 Qwen, 캐릭터, conversation, tool 이름을 알지 못한다.
 
 ### 5.3 Character Runtime
 

@@ -86,6 +86,7 @@ system
 → style
 → scenario
 → lore (파일명 ordinal 순서)
+→ output-boundary policy (기본 assistant 말투 대체 금지 및 지시/추론 비노출)
 → examples
 → memory (현재 post-MVP, 아직 없음)
 → 완료된 conversation turns
@@ -93,6 +94,8 @@ system
 ```
 
 이 메시지 목록은 `ModelRequest`로 adapter에 전달되고, 선택된 `ModelProfile`을 아는 adapter가 Qwen 등 모델의 chat template로 직렬화한다. 따라서 캐릭터 파일에 `<think>`, Qwen 전용 token, llama.cpp 옵션을 넣어 동작에 의존하지 않는다.
+
+`CharacterPromptPolicy`는 bundle data와 분리된 composition 설정이다. 기본값은 character의 personality/style 및 예시를 일반적인 assistant 말투보다 우선시키고 지시·추론의 노출을 금지한다. 모델의 reasoning on/off와 sampling은 캐릭터 bundle이 아니라 `ModelProfile`의 책임이다.
 
 Conversation은 user turn을 pending으로 시작한다. streaming이 성공하면 user와 assistant 응답을 함께 committed history로 저장하고, 취소·오류면 pending turn을 rollback한다. context budget을 넘으면 오래된 완료 turn부터 user/assistant 쌍 단위로 제거한다. system/character section과 최신 user input도 담을 수 없으면 `ContextBudgetExceeded` 오류가 난다.
 
