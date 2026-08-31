@@ -271,7 +271,10 @@ DerivedData/
 /flutter/xcross_native_probe/.dart_tool/
 /flutter/xcross_native_probe/build/
 /flutter/xcross_native_probe/.flutter-plugins*
-/flutter/xcross_native_probe/ios/Flutter/
+# Flutter generates the remaining iOS/Flutter files, but assemble requires this
+# stable template input on every host (including xcross).
+/flutter/xcross_native_probe/ios/Flutter/*
+!/flutter/xcross_native_probe/ios/Flutter/AppFrameworkInfo.plist
 /flutter/xcross_native_probe/ios/Runner/GeneratedPluginRegistrant.*
 
 # Project-wide agent guidance is shared and version-controlled.
