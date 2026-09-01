@@ -1,0 +1,7 @@
+{
+  "name": "com.haruchat.llamacpp",
+  "version": "0.1.0",
+  "displayName": "HaruChat llama.cpp Adapter",
+  "description": "Unity-facing P/Invoke adapter for the HaruChat local C ABI.",
+  "unity": "6000.0"
+}

@@ -26,6 +26,8 @@
 
 Unity가 사용하는 런타임과 .NET 10은 동일하지 않다. Domain/Application 소스는 Unity가 지원하는 `netstandard2.1` API 범위로 제한하고, Linux의 test host와 도구는 .NET 10을 사용한다. Unity 전용 assembly는 Core assembly를 참조할 수 있지만 역방향 참조는 금지한다.
 
+UGUI 화면은 `Assets/Scenes` 또는 prefab에 hierarchy, layout, visual style 및 `MonoBehaviour` 참조를 직렬화한다. 제품 runtime에서 `RuntimeInitializeOnLoadMethod`나 `new GameObject`로 Canvas/패널/버튼을 구성하지 않는다. runtime code는 이미 씬에 연결된 control의 입력, 상태 투영 및 data-driven message item 복제만 담당한다.
+
 권장 설치 확인:
 
 ```bash
@@ -383,6 +385,65 @@ dotnet run --project tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Run
 ```
 
 실제 device에서만 검증 가능한 Metal runtime, memory pressure, thermal behavior와 signing은 별도 device 결과로 표시한다.
+
+### Unity CLI 우선 사용
+
+Unity 관련 상태 확인, 테스트와 batch build는 설치된 `unity` CLI를 기본 entry point로 사용한다. editor binary를 직접 호출하는 것은 CLI가 지원하지 않는 진단이나 복구가 필요한 경우로 한정한다. 실제 iOS 산출물과 기기 검증은 macOS/Xcode 및 signing gate가 필요하므로 Linux에서는 EditMode 검증과 project import/compile까지만 완료로 표시한다.
+
+```bash
+# 설치된 editor와 CLI 환경 확인
+unity doctor --json
+unity editors --json
+
+# Unity EditMode/PlayMode 테스트 (결과 파일은 생성 artifact로 커밋하지 않음)
+unity test HaruChat2 --mode EditMode --output /tmp/haruchat-editmode.xml
+unity test HaruChat2 --mode PlayMode --output /tmp/haruchat-playmode.xml
+
+# iOS export는 macOS runner에서만 실행한다. --output-path는 source tree 밖으로 둔다.
+unity build HaruChat2 --target iOS --output-path /tmp/HaruChat-iOS
+```
+
+### P6 Unity local LlmCore staging과 iPad smoke
+
+Unity iOS player는 CI에서 만든 unsigned `LlmCore.xcframework`를 source tree에 커밋하지 않고 local plugin 경로에 stage한다. checksum 검증을 생략하거나 기존 plugin을 자동으로 덮어쓰지 않는다.
+
+```bash
+bash scripts/prepare-unity-llmcore.sh \
+  /absolute/path/LlmCore.xcframework.zip \
+  /absolute/path/LlmCore.xcframework.zip.sha256
+```
+
+P6 실기기 smoke는 Files에서 GGUF와 data-only character bundle folder를 각각 가져온 뒤 character 선택 → model load → streaming → cancel → 새 대화 → unload/reload 순서로 진행한다. backend 이름, Metal 표시, context, load duration과 recoverable error를 함께 기록한다. Files import와 static XCFramework link는 iOS player 전용이므로 Linux Editor의 mock preview가 이를 대체하지 않는다.
+
+### P6 Flutter UI test host
+
+Unity application build가 현재 불가능한 경우 `flutter/xcross_native_probe`는 P6 UI 진행 점검을 위한 Flutter test host로 사용한다. 이 앱은 Unity scene의 344px control rail, portrait drawer, model/character control, chat message projection, incremental native token, cancel/new conversation/unload 및 diagnostics를 이식한다. native plugin은 계속 `hc_llm_*` C ABI만 호출한다.
+
+```bash
+cd flutter/xcross_native_probe
+flutter test
+```
+
+이 검증은 layout과 native event projection만 증명한다. raw diagnostic ChatML prompt는 P5 managed conversation runtime이 아니며, Flutter/xcross 성공은 Unity composition root, Unity iOS packaging, M4 Metal runtime 또는 P6 MVP Gate를 대체하지 않는다. iPad device 실행에는 기존 Phase 3 xcross prerequisites와 artifact staging을 계속 적용한다.
+
+Flutter iOS 산출물이 필요할 때는 release/AOT build를 우선한다. xcross는 현재 debug/JIT device probe 전용이며 iPadOS 26에서는 홈 화면에서 단독 실행할 수 없다. Linux에서는 `xcross flutter build --ipa`를 probe artifact로만 사용한다. `flutter/xcross_native_probe/ios/Runner.xcworkspace`는 macOS release build를 위한 표준 Flutter iOS project다.
+
+유료 Apple Developer Program 없이도 무료 Personal Team으로 development-signed release build를 실기기에 설치할 수 있다. macOS/Xcode에서 Runner signing team을 Personal Team으로 설정하고, checksum-verified Phase 2 artifact를 stage한 뒤 repository root에서 다음을 실행한다.
+
+```bash
+bash scripts/prepare-xcross-native-probe.sh /absolute/path/LlmCore.xcframework.zip
+bash scripts/build-flutter-ios-release.sh
+```
+
+script는 `flutter build ipa --release --export-method development`를 실행한다. signing certificate, provisioning profile과 Team identifier는 Xcode keychain/project user configuration에만 두며 source control 또는 CI log에 넣지 않는다. macOS release IPA가 준비되지 않은 상태에서 xcross IPA를 release evidence로 기록하지 않는다.
+
+### P6 Unity Build Automation iOS test build
+
+Unity Build Automation(UBA)은 Apple Developer Program membership을 확보한 뒤 Phase 6 Unity application의 manual signed iOS device-test build에 사용한다. native XCFramework producer는 기존 macOS native CI이며 UBA가 대체하지 않는다. UBA iOS target은 credentials set을 비워 저장할 수 없으므로 현재의 no-membership 환경에서 unsigned export gate로 사용하지 않는다. dashboard-held target 설정, repository hook과 secret 경계는 [`ci/unity-build-automation/README.md`](../ci/unity-build-automation/README.md)를 canonical runbook으로 사용한다.
+
+UBA iOS target의 Project subfolder는 `HaruChat2`, scene override는 `Scenes/SampleScene.unity`, pre-build script는 `scripts/prepare-unity-uba-ios.sh`, pre-export method는 `HaruChat.Editor.HaruChatBuildAutomation.ValidateIosBuildInputs`다. `HARUCHAT_LLMCORE_ARTIFACT_URL`과 `HARUCHAT_LLMCORE_ARTIFACT_SHA256`는 dashboard secret으로만 설정한다. `.p12`, password, provisioning profile, artifact URL과 GGUF는 source control 또는 build log에 저장하지 않는다.
+
+membership 확보 뒤 첫 target은 manual-only와 Development signing으로 유지하고 EditMode failure를 build failure로 설정한다. `.p12`, password, provisioning profile, device UDID와 App Store Connect credential은 UBA dashboard에만 등록한다. 성공한 UBA build는 export/signing 증거일 뿐 M4 iPad의 Metal runtime이나 inference 성공을 대체하지 않는다.
 
 ## 10. 공식 참고 자료
 

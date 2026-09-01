@@ -14,5 +14,7 @@ ADR은 구현 전후에 유지해야 할 중요한 기술 결정을 기록한다
 | [ADR-0008](0008-use-data-driven-model-profiles.md) | 모델 차이를 data-driven profile로 표현 | Accepted | 2026-08-27 |
 | [ADR-0009](0009-platform-neutral-native-abi.md) | Platform-neutral native ABI와 Android delivery 보류 | Accepted | 2026-08-28 |
 | [ADR-0010](0010-use-xcross-only-as-phase-3-device-probe-host.md) | xcross를 Phase 3 Flutter device probe host로만 사용 | Accepted | 2026-08-29 |
+| [ADR-0011](0011-use-unity-build-automation-for-phase-6-app-tests.md) | Phase 6 iOS 앱 테스트 빌드에 Unity Build Automation 사용 | Accepted | 2026-09-01 |
+| [ADR-0012](0012-use-flutter-native-probe-as-phase-6-ui-test-host.md) | Flutter native probe를 Phase 6 UI test host로 사용 | Accepted | 2026-09-01 |
 
 각 ADR은 `Context`, `Decision`, `Alternatives`, `Consequences`, `Status`, `Date`를 포함한다.

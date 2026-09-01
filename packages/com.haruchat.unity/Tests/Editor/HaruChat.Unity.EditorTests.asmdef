@@ -1,0 +1,7 @@
+{
+  "name": "HaruChat.Unity.EditorTests",
+  "rootNamespace": "HaruChat.Unity.Tests",
+  "references": ["HaruChat.Unity", "HaruChat.Runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

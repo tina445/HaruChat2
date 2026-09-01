@@ -7,41 +7,57 @@ import 'character_bundle_store.dart';
 
 void main() => runApp(const HaruChatNativeProbeApp());
 
+/// Flutter test host mirroring the Phase 6 Unity screen. Native lifecycle
+/// calls remain real; this app does not replace the Unity/M4 MVP gate.
 class HaruChatNativeProbeApp extends StatelessWidget {
   const HaruChatNativeProbeApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'HaruChat Native Probe',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const NativeProbePage(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'HaruChat P6 UI Harness',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xff101818),
+          colorScheme: const ColorScheme.dark(
+            primary: Color(0xff91e7cf),
+            secondary: Color(0xfff7c77a),
+            surface: Color(0xff182423),
+          ),
+        ),
+        home: const NativeProbePage(),
+      );
+}
+
+class _ChatMessage {
+  _ChatMessage(this.role, this.text);
+  final String role;
+  String text;
 }
 
 class NativeProbePage extends StatefulWidget {
   const NativeProbePage({super.key});
-
   @override
   State<NativeProbePage> createState() => _NativeProbePageState();
 }
 
 class _NativeProbePageState extends State<NativeProbePage> {
-  static const _compactWidth = 700.0;
-  // The character test bench makes phone portrait controls taller; keep those
-  // diagnostic screens scroll-safe rather than compressing text fields.
-  static const _comfortableHeight = 900.0;
+  static const _compactWidth = 800.0;
   final _modelPath = TextEditingController();
-  final _prompt = TextEditingController(text: 'Hello');
-  final _response = StringBuffer();
+  final _composer = TextEditingController();
   final _log = <String>[];
+  final _messages = <_ChatMessage>[
+    _ChatMessage('system', '모델을 가져온 뒤 캐릭터에게 말을 걸어 보세요.'),
+  ];
   StreamSubscription<NativeProbeEvent>? _events;
-  String _status = 'Select a GGUF model';
-  bool _generating = false;
+  CharacterBundleStore? _characterStore;
   List<CharacterBundleSummary> _characters = const [];
   CharacterBundleSummary? _selectedCharacter;
-  CharacterBundleStore? _characterStore;
+  _ChatMessage? _reply;
+  String _status = '모델을 불러오지 않았습니다.';
+  bool _generating = false;
+  bool _modelLoaded = false;
 
   @override
   void initState() {
@@ -56,7 +72,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
   void dispose() {
     _events?.cancel();
     _modelPath.dispose();
-    _prompt.dispose();
+    _composer.dispose();
     super.dispose();
   }
 
@@ -65,13 +81,17 @@ class _NativeProbePageState extends State<NativeProbePage> {
     setState(() {
       if (event.status != null) _status = event.status!;
       if (event.logLine != null) _log.add(event.logLine!);
-      if (event.token != null) _response.write(event.token);
+      if (event.token != null) {
+        _reply ??= _ChatMessage('assistant', '');
+        if (!_messages.contains(_reply)) _messages.add(_reply!);
+        _reply!.text += event.token!;
+      }
       if (event.isTerminal) _generating = false;
     });
   }
 
-  void _setStatus(String status) {
-    if (mounted) setState(() => _status = status);
+  void _setStatus(String value) {
+    if (mounted) setState(() => _status = value);
   }
 
   Future<void> _chooseModel() async {
@@ -79,51 +99,84 @@ class _NativeProbePageState extends State<NativeProbePage> {
     if (path != null && mounted) setState(() => _modelPath.text = path);
   }
 
-  Future<void> _load() async =>
-      _setStatus(await NativeProbe.load(_modelPath.text));
-
-  Future<void> _generate() async {
-    setState(() {
-      _response.clear();
-      _log.clear();
-      _generating = true;
-    });
-    _setStatus(await NativeProbe.generate(_probePrompt()));
+  Future<void> _load() async {
+    if (_modelPath.text.trim().isEmpty) {
+      _setStatus('Files에서 GGUF를 선택하세요.');
+      return;
+    }
+    _setStatus('모델을 준비하고 있습니다…');
+    final status = await NativeProbe.load(_modelPath.text);
+    if (mounted) {
+      setState(() {
+        _status = status;
+        _modelLoaded = !status.toLowerCase().contains('failed');
+      });
+    }
   }
 
-  String _probePrompt() {
-    final character = _selectedCharacter;
-    final system = character?.promptContext ?? 'You are a concise, helpful assistant.';
-    final user = _prompt.text.trim();
-    // This diagnostic probe rebuilds one stateless ChatML request per Generate;
-    // it is not the P5 multi-turn Conversation runtime. The empty thinking block
-    // is Qwen's hard non-thinking switch.
+  Future<void> _send() async {
+    final input = _composer.text.trim();
+    if (input.isEmpty || !_modelLoaded || _generating) return;
+    setState(() {
+      _composer.clear();
+      _messages.add(_ChatMessage('user', input));
+      _reply = _ChatMessage('assistant', '');
+      _messages.add(_reply!);
+      _log.clear();
+      _generating = true;
+      _status = '응답을 스트리밍하고 있습니다…';
+    });
+    _setStatus(await NativeProbe.generate(_probePrompt(input)));
+  }
+
+  String _probePrompt(String user) {
+    final system = _selectedCharacter?.promptContext ??
+        'You are a concise, helpful assistant.';
     return '<|im_start|>system\n$system<|im_end|>\n'
         '<|im_start|>user\n$user<|im_end|>\n'
         '<|im_start|>assistant\n<think>\n\n</think>\n\n';
+  }
+
+  Future<void> _cancel() async {
+    _setStatus(await NativeProbe.cancel());
+    if (mounted) setState(() => _generating = false);
+  }
+
+  Future<void> _unload() async {
+    final status = await NativeProbe.unload();
+    if (mounted) {
+      setState(() {
+        _status = status;
+        _modelLoaded = false;
+        _generating = false;
+      });
+    }
+  }
+
+  Future<void> _newConversation() async {
+    final status = await NativeProbe.reset();
+    if (mounted) {
+      setState(() {
+        _status = status;
+        _messages
+          ..clear()
+          ..add(_ChatMessage('system', '새 대화를 시작했습니다.'));
+        _reply = null;
+      });
+    }
   }
 
   Future<void> _refreshCharacters() async {
     try {
       _characterStore ??= await CharacterBundleStore.openDefault();
       final characters = await _characterStore!.list();
-      if (!mounted) return;
-      setState(() {
-        _characters = characters;
-        if (_selectedCharacter != null) {
-          CharacterBundleSummary? refreshed;
-          for (final item in characters) {
-            if (item.id == _selectedCharacter!.id) refreshed = item;
-          }
-          _selectedCharacter = refreshed;
-        }
-      });
+      if (mounted) setState(() => _characters = characters);
     } catch (error) {
       _setStatus('Character storage unavailable: $error');
     }
   }
 
-  Future<void> _createCharacter() async {
+  Future<void> _addCharacter() async {
     final draft = await showDialog<CharacterBundleDraft>(
       context: context,
       builder: (_) => const _CharacterDraftDialog(),
@@ -133,357 +186,307 @@ class _NativeProbePageState extends State<NativeProbePage> {
       _characterStore ??= await CharacterBundleStore.openDefault();
       final created = await _characterStore!.create(draft);
       await _refreshCharacters();
-      if (mounted) {
-        setState(() {
-          _selectedCharacter = _characters.firstWhere(
-            (item) => item.id == created.id,
-            orElse: () => created,
-          );
-        });
-      }
-      _setStatus('Created and added character: ${created.displayName}');
+      if (mounted) setState(() => _selectedCharacter = created);
     } catch (error) {
       _setStatus('Character creation failed: $error');
     }
   }
 
-  Future<void> _cancel() async => _setStatus(await NativeProbe.cancel());
-  Future<void> _reset() async => _setStatus(await NativeProbe.reset());
-  Future<void> _unload() async => _setStatus(await NativeProbe.unload());
-
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('HaruChat Native Probe')),
-        body: SafeArea(
-          top: false,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < _compactWidth;
-              final short = constraints.maxHeight < _comfortableHeight;
-              final controls = _controls(compact);
-              return Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1100),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: short
-                        ? _ScrollableProbeBody(
-                            controls: controls,
-                            response: _response.toString(),
-                            log: _log.join('\n'),
-                          )
-                        : _ExpandedProbeBody(
-                            controls: controls,
-                            response: _response.toString(),
-                            log: _log.join('\n'),
-                          ),
-                  ),
-                ),
-              );
-            },
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < _compactWidth;
+          final rail = _ControlRail(
+            modelPath: _modelPath,
+            characters: _characters,
+            selected: _selectedCharacter,
+            loaded: _modelLoaded,
+            generating: _generating,
+            onCharacterChanged: (value) =>
+                setState(() => _selectedCharacter = value),
+            onAddCharacter: _addCharacter,
+            onRefreshCharacters: _refreshCharacters,
+            onChooseModel: _chooseModel,
+            onLoad: _load,
+            onUnload: _unload,
+            onNewConversation: _newConversation,
+            onCancel: _cancel,
+          );
+          return Scaffold(
+            resizeToAvoidBottomInset: false,
+            appBar: AppBar(title: const _Masthead()),
+            drawer: compact
+                ? Drawer(
+                    backgroundColor: const Color(0xff182423),
+                    child: SafeArea(child: rail))
+                : null,
+            body: Row(children: [
+              if (!compact) SizedBox(width: 344, child: rail),
+              Expanded(
+                  child: _Conversation(
+                      messages: _messages,
+                      composer: _composer,
+                      status: _status,
+                      loaded: _modelLoaded,
+                      generating: _generating,
+                      onSend: _send)),
+            ]),
+          );
+        },
+      );
+}
+
+class _Masthead extends StatelessWidget {
+  const _Masthead();
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) => Row(children: [
+          const Icon(Icons.auto_awesome, color: Color(0xff91e7cf)),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text('HARU / P6',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.2)),
           ),
-        ),
-      );
-
-  Widget _controls(bool compact) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _StatusBanner(status: _status),
-          const SizedBox(height: 12),
-          _characterControls(compact),
-          const SizedBox(height: 12),
-          compact ? _modelControlsCompact() : _modelControlsWide(),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _prompt,
-            minLines: 2,
-            maxLines: 4,
-            textInputAction: TextInputAction.newline,
-            decoration: const InputDecoration(
-                border: OutlineInputBorder(), labelText: 'Prompt'),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _ProbeButton.filled(
-                  onPressed: _generating ? null : _generate, label: 'Generate'),
-              _ProbeButton.outlined(
-                  onPressed: _generating ? _cancel : null, label: 'Cancel'),
-              _ProbeButton.outlined(onPressed: _reset, label: 'Reset'),
-              _ProbeButton.outlined(onPressed: _unload, label: 'Unload'),
-            ],
-          ),
-        ],
-      );
-
-  Widget _characterControls(bool compact) => _CharacterBenchCard(
-        compact: compact,
-        characters: _characters,
-        selected: _selectedCharacter,
-        onChanged: (value) => setState(() => _selectedCharacter = value),
-        onCreate: _createCharacter,
-        onRefresh: _refreshCharacters,
-      );
-
-  Widget _modelControlsCompact() => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _modelPathField(),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _ProbeButton.filled(
-                  onPressed: _chooseModel, label: 'Choose GGUF'),
-              _ProbeButton.filled(onPressed: _load, label: 'Load'),
-            ],
-          ),
-        ],
-      );
-
-  Widget _modelControlsWide() => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(child: _modelPathField()),
-          const SizedBox(width: 8),
-          _ProbeButton.filled(onPressed: _chooseModel, label: 'Choose GGUF'),
-          const SizedBox(width: 8),
-          _ProbeButton.filled(onPressed: _load, label: 'Load'),
-        ],
-      );
-
-  Widget _modelPathField() => TextField(
-        controller: _modelPath,
-        minLines: 1,
-        maxLines: 2,
-        keyboardType: TextInputType.url,
-        decoration: const InputDecoration(
-          border: OutlineInputBorder(),
-          labelText: 'Imported GGUF path',
-          hintText: 'Choose a model imported into Files',
-        ),
+          if (constraints.maxWidth >= 310) ...const [
+            SizedBox(width: 10),
+            Text('FLUTTER UI HARNESS',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.2,
+                    color: Color(0xffa7bcba))),
+          ],
+        ]),
       );
 }
 
-class _ExpandedProbeBody extends StatelessWidget {
-  const _ExpandedProbeBody(
-      {required this.controls, required this.response, required this.log});
-  final Widget controls;
-  final String response;
-  final String log;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          controls,
-          const SizedBox(height: 16),
-          Expanded(child: _PanelSection(title: 'Response', text: response)),
-          const SizedBox(height: 12),
-          Expanded(
-              child: _PanelSection(
-                  title: 'Structured native event log', text: log)),
-        ],
-      );
-}
-
-class _ScrollableProbeBody extends StatelessWidget {
-  const _ScrollableProbeBody(
-      {required this.controls, required this.response, required this.log});
-  final Widget controls;
-  final String response;
-  final String log;
-
-  @override
-  Widget build(BuildContext context) => ListView(
-        children: [
-          controls,
-          const SizedBox(height: 16),
-          SizedBox(
-              height: 180,
-              child: _PanelSection(title: 'Response', text: response)),
-          const SizedBox(height: 12),
-          SizedBox(
-              height: 180,
-              child: _PanelSection(
-                  title: 'Structured native event log', text: log)),
-        ],
-      );
-}
-
-class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({required this.status});
-  final String status;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-          color: scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(8)),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: SelectableText(status,
-            style: TextStyle(color: scheme.onPrimaryContainer)),
-      ),
-    );
-  }
-}
-
-class _ProbeButton extends StatelessWidget {
-  const _ProbeButton._(
-      {required this.onPressed, required this.label, required this.filled});
-  factory _ProbeButton.filled(
-          {required VoidCallback? onPressed, required String label}) =>
-      _ProbeButton._(onPressed: onPressed, label: label, filled: true);
-  factory _ProbeButton.outlined(
-          {required VoidCallback? onPressed, required String label}) =>
-      _ProbeButton._(onPressed: onPressed, label: label, filled: false);
-
-  final VoidCallback? onPressed;
-  final String label;
-  final bool filled;
-
-  @override
-  Widget build(BuildContext context) {
-    final style =
-        ButtonStyle(minimumSize: WidgetStateProperty.all(const Size(0, 48)));
-    return filled
-        ? FilledButton(onPressed: onPressed, style: style, child: Text(label))
-        : OutlinedButton(
-            onPressed: onPressed, style: style, child: Text(label));
-  }
-}
-
-class _PanelSection extends StatelessWidget {
-  const _PanelSection({required this.title, required this.text});
-  final String title;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(title, style: Theme.of(context).textTheme.labelLarge),
-          const SizedBox(height: 6),
-          Expanded(child: _TextPanel(text: text)),
-        ],
-      );
-}
-
-class _TextPanel extends StatelessWidget {
-  const _TextPanel({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => DecoratedBox(
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerLowest,
-          border: Border.all(color: Theme.of(context).colorScheme.outline),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Scrollbar(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(12),
-            child: SelectableText(
-              text.isEmpty ? 'No events yet.' : text,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(fontFamily: 'monospace'),
-            ),
-          ),
-        ),
-      );
-}
-
-class _CharacterBenchCard extends StatelessWidget {
-  const _CharacterBenchCard({
-    required this.compact,
-    required this.characters,
-    required this.selected,
-    required this.onChanged,
-    required this.onCreate,
-    required this.onRefresh,
-  });
-
-  final bool compact;
+class _ControlRail extends StatelessWidget {
+  const _ControlRail(
+      {required this.modelPath,
+      required this.characters,
+      required this.selected,
+      required this.loaded,
+      required this.generating,
+      required this.onCharacterChanged,
+      required this.onAddCharacter,
+      required this.onRefreshCharacters,
+      required this.onChooseModel,
+      required this.onLoad,
+      required this.onUnload,
+      required this.onNewConversation,
+      required this.onCancel});
+  final TextEditingController modelPath;
   final List<CharacterBundleSummary> characters;
   final CharacterBundleSummary? selected;
-  final ValueChanged<CharacterBundleSummary?> onChanged;
-  final Future<void> Function() onCreate;
-  final Future<void> Function() onRefresh;
+  final bool loaded, generating;
+  final ValueChanged<CharacterBundleSummary?> onCharacterChanged;
+  final Future<void> Function() onAddCharacter,
+      onRefreshCharacters,
+      onChooseModel,
+      onLoad,
+      onUnload,
+      onNewConversation,
+      onCancel;
+  @override
+  Widget build(BuildContext context) =>
+      ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('RUNTIME CONTROLS',
+            style: TextStyle(
+                letterSpacing: 1.5, fontSize: 11, color: Color(0xff91e7cf))),
+        const SizedBox(height: 14),
+        DropdownButtonFormField<CharacterBundleSummary?>(
+            initialValue: selected,
+            isExpanded: true,
+            decoration: const InputDecoration(
+                labelText: '캐릭터', border: OutlineInputBorder()),
+            items: [
+              const DropdownMenuItem(value: null, child: Text('기본 assistant')),
+              ...characters.map((item) =>
+                  DropdownMenuItem(value: item, child: Text(item.displayName)))
+            ],
+            onChanged: onCharacterChanged),
+        const SizedBox(height: 8),
+        _RailButton(
+            icon: Icons.person_add_alt_1,
+            label: 'character 추가',
+            onTap: onAddCharacter),
+        _RailButton(
+            icon: Icons.refresh, label: '새로고침', onTap: onRefreshCharacters),
+        const Divider(height: 30),
+        TextField(
+            controller: modelPath,
+            maxLines: 2,
+            decoration: const InputDecoration(
+                labelText: 'Imported GGUF path',
+                hintText: 'Files에서 선택',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        _RailButton(
+            icon: Icons.folder_open,
+            label: 'GGUF 모델 가져오기',
+            onTap: onChooseModel),
+        _RailButton(
+            icon: Icons.play_circle_outline,
+            label: '모델 로드',
+            onTap: generating ? null : onLoad),
+        _RailButton(
+            icon: Icons.eject_outlined,
+            label: '모델 언로드',
+            onTap: loaded ? onUnload : null),
+        const Divider(height: 30),
+        _RailButton(
+            icon: Icons.refresh_rounded,
+            label: '새 대화',
+            onTap: onNewConversation),
+        _RailButton(
+            icon: Icons.stop_circle_outlined,
+            label: '응답 취소',
+            onTap: generating ? onCancel : null),
+        const SizedBox(height: 24),
+        const _Diagnostics(),
+      ]);
+}
 
+class _RailButton extends StatelessWidget {
+  const _RailButton(
+      {required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: OutlinedButton.icon(
+          onPressed: onTap,
+          icon: Icon(icon, size: 18),
+          label: Align(alignment: Alignment.centerLeft, child: Text(label))));
+}
+
+class _Diagnostics extends StatelessWidget {
+  const _Diagnostics();
+  @override
+  Widget build(BuildContext context) => const DecoratedBox(
+      decoration: BoxDecoration(
+          color: Color(0xff111c1b),
+          borderRadius: BorderRadius.all(Radius.circular(12))),
+      child: Padding(
+          padding: EdgeInsets.all(14),
+          child: Text(
+              'DIAGNOSTICS\nBackend: native probe\nMetal: device-only\nContext: native reported\nLoad: native reported',
+              style: TextStyle(
+                  fontSize: 12, height: 1.55, color: Color(0xffb5c9c6)))));
+}
+
+class _Conversation extends StatelessWidget {
+  const _Conversation(
+      {required this.messages,
+      required this.composer,
+      required this.status,
+      required this.loaded,
+      required this.generating,
+      required this.onSend});
+  final List<_ChatMessage> messages;
+  final TextEditingController composer;
+  final String status;
+  final bool loaded, generating;
+  final Future<void> Function() onSend;
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+                color: const Color(0xff192726),
+                borderRadius: BorderRadius.circular(12)),
+            child: Row(children: [
+              Icon(Icons.circle,
+                  size: 10,
+                  color: loaded
+                      ? const Color(0xff91e7cf)
+                      : const Color(0xfff7c77a)),
+              const SizedBox(width: 9),
+              Expanded(child: Text(status))
+            ])),
+        Expanded(
+            child: ListView.builder(
+                padding: const EdgeInsets.all(20),
+                itemCount: messages.length,
+                itemBuilder: (_, index) =>
+                    _MessageBubble(message: messages[index]))),
+        AnimatedPadding(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(context).bottom),
+            child: SafeArea(
+                top: false,
+                child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                    child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                              child: TextField(
+                                  key: const Key('composer'),
+                                  controller: composer,
+                                  enabled: loaded && !generating,
+                                  minLines: 1,
+                                  maxLines: 4,
+                                  decoration: const InputDecoration(
+                                      hintText: '메시지를 입력하세요', filled: true))),
+                          const SizedBox(width: 10),
+                          FilledButton.icon(
+                              key: const Key('send'),
+                              onPressed: loaded && !generating ? onSend : null,
+                              icon: const Icon(Icons.arrow_upward),
+                              label: const Text('전송'))
+                        ])))),
+      ]);
+}
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.message});
+  final _ChatMessage message;
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final picker = DropdownButtonFormField<CharacterBundleSummary?>(
-      key: ValueKey(selected?.id),
-      initialValue: selected,
-      isExpanded: true,
-      decoration: const InputDecoration(
-        labelText: 'Test character bundle',
-        border: OutlineInputBorder(),
-      ),
-      items: [
-        const DropdownMenuItem<CharacterBundleSummary?>(
-          value: null,
-          child: Text('No character instruction'),
-        ),
-        ...characters.map(
-          (character) => DropdownMenuItem<CharacterBundleSummary?>(
-            value: character,
-            child: Text('${character.displayName} · ${character.id}'),
-          ),
-        ),
-      ],
-      onChanged: onChanged,
-    );
-    final actions = Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        _ProbeButton.filled(onPressed: onCreate, label: 'Create & add'),
-        _ProbeButton.outlined(onPressed: onRefresh, label: 'Refresh'),
-      ],
-    );
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.tertiaryContainer.withValues(alpha: 0.46),
-        border: Border.all(color: scheme.tertiary),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Character test bench', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 4),
-            Text(
-              'Creates device-local Character Bundle v1 test data. This probe sends its system instruction as raw diagnostic prompt text.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-            if (compact)
-              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [picker, const SizedBox(height: 8), actions])
-            else
-              Row(children: [Expanded(child: picker), const SizedBox(width: 12), actions]),
-          ],
-        ),
-      ),
-    );
+    final user = message.role == 'user';
+    final system = message.role == 'system';
+    return Align(
+        alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+            constraints: const BoxConstraints(maxWidth: 640),
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: user
+                    ? const Color(0xff24594f)
+                    : system
+                        ? const Color(0xff28312b)
+                        : const Color(0xff1d2b2a),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                    color:
+                        system ? const Color(0xff536761) : Colors.transparent)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(message.role.toUpperCase(),
+                  style: const TextStyle(
+                      fontSize: 10,
+                      letterSpacing: 1.4,
+                      color: Color(0xff91e7cf))),
+              const SizedBox(height: 5),
+              Text(message.text.isEmpty ? '…' : message.text)
+            ])));
   }
 }
 
 class _CharacterDraftDialog extends StatefulWidget {
   const _CharacterDraftDialog();
-
   @override
   State<_CharacterDraftDialog> createState() => _CharacterDraftDialogState();
 }
@@ -491,42 +494,59 @@ class _CharacterDraftDialog extends StatefulWidget {
 class _CharacterDraftDialogState extends State<_CharacterDraftDialog> {
   final _id = TextEditingController(text: 'test-character');
   final _name = TextEditingController(text: 'Test Character');
-  final _system = TextEditingController(text: 'You are a helpful test character.');
-  final _personality = TextEditingController();
-  final _style = TextEditingController();
+  final _system =
+      TextEditingController(text: 'You are a helpful test character.');
   String? _error;
-
   @override
   void dispose() {
-    _id.dispose(); _name.dispose(); _system.dispose(); _personality.dispose(); _style.dispose();
+    _id.dispose();
+    _name.dispose();
+    _system.dispose();
     super.dispose();
   }
 
   void _submit() {
     final draft = CharacterBundleDraft(
-      id: _id.text.trim(), displayName: _name.text.trim(), system: _system.text.trim(), personality: _personality.text.trim(), style: _style.text.trim(),
-    );
+        id: _id.text.trim(),
+        displayName: _name.text.trim(),
+        system: _system.text.trim());
     final error = draft.validate();
-    if (error != null) { setState(() => _error = error); return; }
+    if (error != null) {
+      setState(() => _error = error);
+      return;
+    }
     Navigator.of(context).pop(draft);
   }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Create test character'),
-        content: SizedBox(
-          width: 520,
-          child: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: _id, decoration: const InputDecoration(labelText: 'ID', hintText: 'lowercase-id')),
-              TextField(controller: _name, decoration: const InputDecoration(labelText: 'Display name')),
-              TextField(controller: _system, minLines: 3, maxLines: 6, decoration: const InputDecoration(labelText: 'System instruction')),
-              TextField(controller: _personality, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Personality (optional)')),
-              TextField(controller: _style, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Style (optional)')),
-              if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
-            ]),
-          ),
-        ),
-        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')), FilledButton(onPressed: _submit, child: const Text('Create & add'))],
-      );
+          title: const Text('Create test character'),
+          scrollable: true,
+          content: SizedBox(
+              width: 520,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: _id,
+                    decoration: const InputDecoration(labelText: 'ID')),
+                TextField(
+                    controller: _name,
+                    decoration:
+                        const InputDecoration(labelText: 'Display name')),
+                TextField(
+                    controller: _system,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration:
+                        const InputDecoration(labelText: 'System instruction')),
+                if (_error != null)
+                  Text(_error!,
+                      style:
+                          TextStyle(color: Theme.of(context).colorScheme.error))
+              ])),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: _submit, child: const Text('Create & add'))
+          ]);
 }

@@ -1,0 +1,10 @@
+{
+  "name": "HaruChat.Runtime",
+  "rootNamespace": "HaruChat.Runtime",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true
+}

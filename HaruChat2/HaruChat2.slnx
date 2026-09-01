@@ -1,0 +1,8 @@
+﻿<Solution>
+  <Project Path="HaruChat.Unity.csproj" />
+  <Project Path="HaruChat.Runtime.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="HaruChat.LlamaCpp.csproj" />
+  <Project Path="HaruChat.Unity.PlayModeTests.csproj" />
+  <Project Path="HaruChat.Unity.EditorTests.csproj" />
+</Solution>

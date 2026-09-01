@@ -1,0 +1,7 @@
+<Project>
+  <!-- Keep .NET build products out of UPM source packages so Unity never imports duplicate DLLs. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../.haruchat-build/managed/bin/$(MSBuildProjectName)/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../.haruchat-build/managed/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

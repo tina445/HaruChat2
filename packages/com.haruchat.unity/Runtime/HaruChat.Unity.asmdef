@@ -1,0 +1,10 @@
+{
+  "name": "HaruChat.Unity",
+  "rootNamespace": "HaruChat.Unity",
+  "references": ["HaruChat.Runtime", "HaruChat.LlamaCpp", "Unity.TextMeshPro", "Unity.ugui", "Unity.InputSystem"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true
+}

@@ -69,7 +69,8 @@ C ABI → llama.cpp → Metal / CPU
 4. 독립적인 작업은 파일 소유권을 분리해 병렬화한다.
 5. 구현 후 변경 범위에 가까운 테스트부터 실행한다.
 6. 통합 단계에서 dependency 방향, 문서 추적성, 전체 관련 테스트를 한 번 검증한다.
-7. 완료 보고는 변경, 결정, 검증, 위험만 간결하게 남긴다.
+7. Unity 작업은 설치된 `unity` CLI를 우선 사용해 editor/version 상태를 확인하고, 가능한 경우 EditMode/PlayMode 테스트와 batch build를 실행한다. 직접 editor 실행은 CLI로 표현할 수 없는 작업에만 사용하며, 정확한 명령과 결과는 `docs/DEVELOPMENT.md`에 따른다. UGUI 화면의 hierarchy, layout, style과 control reference는 Scene/Prefab에 직렬화해 Editor에서 배치한다. `RuntimeInitializeOnLoadMethod` 또는 `new GameObject`로 제품 UI를 조립하지 않으며, runtime script는 scene-wired control의 상태·행동만 담당한다.
+8. 완료 보고는 변경, 결정, 검증, 위험만 간결하게 남긴다.
 
 ## 6. 토큰 효율 규칙
 

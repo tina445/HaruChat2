@@ -171,6 +171,7 @@ ExportedObj/
 # .NET build outputs are reproducible and must not enter source control.
 **/bin/
 **/obj/
+/.haruchat-build/
 
 # Reproducible CI/local Apple artifacts are published by CI, never committed.
 /artifacts/
@@ -178,6 +179,9 @@ ExportedObj/
 # Downloaded unsigned XCFramework used only by the local iPad probe.
 /native/probe/Vendor/
 /native/probe/out/
+
+# Locally staged, checksum-verified iOS static XCFramework for the Unity player.
+/HaruChat2/Assets/Plugins/iOS/LlmCore.xcframework/
 
 # Unity3D generated meta files
 *.pidb.meta

@@ -85,12 +85,12 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 ## Phase 6 — Unity/M4 iPad MVP
 
-**목표:** 가장 작은 Unity UI에서 실제 M4 iPad local character chat을 완성한다.
+**목표:** 가장 작은 Unity UI에서 실제 M4 iPad local character chat을 완성한다. Unity build가 불가능한 환경에서는 기존 Flutter native probe를 P6 UI test host로 사용해 Presentation의 화면 구조와 interaction state를 먼저 검증한다.
 
-- **구현 범위:** local UPM package 연결, XCFramework plugin import, composition root, model/character picker, load progress, 입력, incremental response, cancel/reset/unload, main-thread dispatcher와 diagnostics를 구현한다. MVP는 text-only다.
+- **구현 범위:** local UPM package 연결, XCFramework plugin import, composition root, model/character picker, load progress, 입력, incremental response, cancel/reset/unload, main-thread dispatcher와 diagnostics를 구현한다. `flutter/xcross_native_probe`는 같은 control hierarchy와 native event streaming projection을 검증하는 test host이며 Unity Presentation/managed composition root을 대체하지 않는다. Apple Developer Program membership 확보 뒤 Unity Build Automation의 manual iOS device-test target은 checksum-검증 Phase 2 artifact를 pre-build hook으로 stage하고 EditMode와 export 검증을 실행한다. MVP는 text-only다.
 - **생성 파일/모듈:** `unity/HaruChat`, `com.haruchat.unity`, iPad app, device smoke checklist와 결과 기록.
 - **의존성:** Phase 0 signing Gate, Phase 2 artifact, Phase 3 device proof, Phase 5 headless vertical slice, 실제 GGUF와 M4 iPad.
-- **테스트:** managed 및 Unity EditMode/PlayMode, native plugin load, scene teardown, token batching과 main-thread responsiveness. Device에서 캐릭터 instruction, streaming, cancel, reset, repeated generation, unload/reload, memory pressure를 확인한다.
+- **테스트:** Flutter widget test로 control rail/drawer, composer, message projection을 Linux에서 확인하고, managed 및 Unity EditMode/PlayMode, native plugin load, scene teardown, token batching과 main-thread responsiveness를 이어서 확인한다. Device에서 캐릭터 instruction, streaming, cancel, reset, repeated generation, unload/reload, memory pressure를 확인한다.
 - **완료 조건 — MVP Gate:** 실제 M4 iPad의 Unity 앱에서 캐릭터와 runtime-configured Qwen GGUF를 선택하고 Metal로 load한 뒤 캐릭터 지침이 반영된 답변이 incremental streaming된다. 취소/새 대화/unload가 동작하고 Unity main thread를 block하지 않으며 오류가 복구 가능한 형태로 표시된다.
 - **예상 위험:** Unity iOS plugin/resource packaging, signing, file picker/storage, frame stall, Live2D 없이도 큰 model의 memory/thermal 부담. simulator나 unsigned artifact만으로 MVP를 완료 처리하지 않는다.
 

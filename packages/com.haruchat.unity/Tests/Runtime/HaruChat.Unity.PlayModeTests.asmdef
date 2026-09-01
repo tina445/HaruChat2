@@ -1,0 +1,8 @@
+{
+  "name": "HaruChat.Unity.PlayModeTests",
+  "rootNamespace": "HaruChat.Unity.Tests",
+  "references": ["HaruChat.Unity"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

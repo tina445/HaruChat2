@@ -3,89 +3,66 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:haruchat_xcross_native_probe/main.dart';
 
 void main() {
-  Future<void> pumpProbe(WidgetTester tester, Size size) async {
+  Future<void> pumpHarness(WidgetTester tester, Size size) async {
     await tester.binding.setSurfaceSize(size);
     await tester.pumpWidget(const HaruChatNativeProbeApp());
     await tester.pump();
   }
 
-  testWidgets('compact iPhone layout stacks model controls without overflow',
+  testWidgets('landscape iPad projects the Unity control rail and chat surface',
       (tester) async {
-    await pumpProbe(tester, const Size(375, 812));
-
-    expect(find.text('Choose GGUF'), findsOneWidget);
-    expect(find.text('Load'), findsOneWidget);
-    expect(find.text('Character test bench'), findsOneWidget);
-    expect(find.text('Create & add'), findsOneWidget);
-    final list = find
-        .descendant(
-          of: find.byType(ListView),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    await tester.scrollUntilVisible(find.text('Response'), 240, scrollable: list);
-    expect(find.text('Response'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Structured native event log'),
-      240,
-      scrollable: list,
-    );
-    expect(find.text('Structured native event log'), findsOneWidget);
+    await pumpHarness(tester, const Size(1194, 834));
+    expect(find.text('RUNTIME CONTROLS'), findsOneWidget);
+    expect(find.text('GGUF 모델 가져오기'), findsOneWidget);
+    expect(find.text('새 대화'), findsOneWidget);
+    expect(find.textContaining('DIAGNOSTICS'), findsOneWidget);
+    expect(find.byKey(const Key('composer')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('character creation dialog validates a bundle draft', (tester) async {
-    await pumpProbe(tester, const Size(768, 1024));
-    await tester.tap(find.text('Create & add'));
+  testWidgets('portrait iPad moves the rail into an accessible drawer',
+      (tester) async {
+    await pumpHarness(tester, const Size(768, 1024));
+    expect(find.text('RUNTIME CONTROLS'), findsNothing);
+    await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    expect(find.text('Create test character'), findsOneWidget);
-    expect(find.text('System instruction'), findsOneWidget);
-    await tester.tap(find.text('Create & add').last);
+    expect(find.text('RUNTIME CONTROLS'), findsOneWidget);
+    expect(find.text('응답 취소'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('chat surface starts with the Unity system guidance',
+      (tester) async {
+    await pumpHarness(tester, const Size(1194, 834));
+    expect(find.text('모델을 가져온 뒤 캐릭터에게 말을 걸어 보세요.'), findsOneWidget);
+    expect(find.text('메시지를 입력하세요'), findsOneWidget);
+  });
+
+  testWidgets('iPhone width keeps the masthead and option rail overflow-safe',
+      (tester) async {
+    await pumpHarness(tester, const Size(320, 568));
+    expect(find.text('HARU / P6'), findsOneWidget);
+    expect(find.byKey(const Key('composer')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keyboard inset lifts the composer instead of obscuring it',
+      (tester) async {
+    await pumpHarness(tester, const Size(768, 1024));
+    addTearDown(tester.view.resetViewInsets);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 336);
     await tester.pump();
-    expect(tester.takeException(), isNull);
-  });
+    await tester.pumpAndSettle();
 
-  testWidgets(
-      'iPad portrait and landscape keep all diagnostic controls accessible',
-      (tester) async {
-    await pumpProbe(tester, const Size(768, 1024));
-    expect(find.text('Generate'), findsOneWidget);
-    expect(find.text('Structured native event log'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    await pumpProbe(tester, const Size(1194, 834));
-    expect(find.text('Choose GGUF'), findsOneWidget);
-    expect(find.text('Unload'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('short keyboard-like viewport becomes scroll safe',
-      (tester) async {
-    await pumpProbe(tester, const Size(375, 360));
-
-    await tester.scrollUntilVisible(
-      find.text('Response'),
-      200,
-      scrollable: find
-          .descendant(
-            of: find.byType(ListView),
-            matching: find.byType(Scrollable),
-          )
-          .first,
+    final padding = tester.widget<AnimatedPadding>(find.ancestor(
+      of: find.byKey(const Key('composer')),
+      matching: find.byType(AnimatedPadding),
+    ));
+    expect(
+      (padding.padding as EdgeInsets).bottom,
+      336 / tester.view.devicePixelRatio,
     );
-    expect(find.text('Response'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Structured native event log'),
-      200,
-      scrollable: find
-          .descendant(
-            of: find.byType(ListView),
-            matching: find.byType(Scrollable),
-          )
-          .first,
-    );
-    expect(find.text('Structured native event log'), findsOneWidget);
-    expect(find.byType(Scrollable), findsAtLeastNWidgets(1));
+    expect(find.byKey(const Key('composer')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
