@@ -192,6 +192,24 @@ class _NativeProbePageState extends State<NativeProbePage> {
     }
   }
 
+  Future<void> _editCharacter() async {
+    final existing = _selectedCharacter;
+    if (existing == null) return;
+    final draft = await showDialog<CharacterBundleDraft>(
+      context: context,
+      builder: (_) => _CharacterDraftDialog(existing: existing),
+    );
+    if (draft == null) return;
+    try {
+      _characterStore ??= await CharacterBundleStore.openDefault();
+      final updated = await _characterStore!.update(existing, draft);
+      await _refreshCharacters();
+      if (mounted) setState(() => _selectedCharacter = updated);
+    } catch (error) {
+      _setStatus('Character update failed: $error');
+    }
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
@@ -205,6 +223,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
             onCharacterChanged: (value) =>
                 setState(() => _selectedCharacter = value),
             onAddCharacter: _addCharacter,
+            onEditCharacter: _editCharacter,
             onRefreshCharacters: _refreshCharacters,
             onChooseModel: _chooseModel,
             onLoad: _load,
@@ -273,6 +292,7 @@ class _ControlRail extends StatelessWidget {
       required this.generating,
       required this.onCharacterChanged,
       required this.onAddCharacter,
+      required this.onEditCharacter,
       required this.onRefreshCharacters,
       required this.onChooseModel,
       required this.onLoad,
@@ -285,6 +305,7 @@ class _ControlRail extends StatelessWidget {
   final bool loaded, generating;
   final ValueChanged<CharacterBundleSummary?> onCharacterChanged;
   final Future<void> Function() onAddCharacter,
+      onEditCharacter,
       onRefreshCharacters,
       onChooseModel,
       onLoad,
@@ -314,6 +335,10 @@ class _ControlRail extends StatelessWidget {
             icon: Icons.person_add_alt_1,
             label: 'character 추가',
             onTap: onAddCharacter),
+        _RailButton(
+            icon: Icons.edit_note,
+            label: 'character 편집',
+            onTap: selected == null ? null : onEditCharacter),
         _RailButton(
             icon: Icons.refresh, label: '새로고침', onTap: onRefreshCharacters),
         const Divider(height: 30),
@@ -486,22 +511,56 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _CharacterDraftDialog extends StatefulWidget {
-  const _CharacterDraftDialog();
+  const _CharacterDraftDialog({this.existing});
+  final CharacterBundleSummary? existing;
   @override
   State<_CharacterDraftDialog> createState() => _CharacterDraftDialogState();
 }
 
 class _CharacterDraftDialogState extends State<_CharacterDraftDialog> {
-  final _id = TextEditingController(text: 'test-character');
-  final _name = TextEditingController(text: 'Test Character');
-  final _system =
-      TextEditingController(text: 'You are a helpful test character.');
+  late final TextEditingController _id;
+  late final TextEditingController _name;
+  late final TextEditingController _system;
+  late final TextEditingController _personality;
+  late final TextEditingController _style;
+  late final TextEditingController _scenario;
+  final _lore = <_LoreFields>[];
+  final _examples = <_ExampleFields>[];
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.existing?.draft;
+    _id = TextEditingController(text: draft?.id ?? 'test-character');
+    _name = TextEditingController(text: draft?.displayName ?? 'Test Character');
+    _system = TextEditingController(
+        text: draft?.system ?? 'You are a helpful test character.');
+    _personality = TextEditingController(text: draft?.personality ?? '');
+    _style = TextEditingController(text: draft?.style ?? '');
+    _scenario = TextEditingController(text: draft?.scenario ?? '');
+    for (final item in draft?.lore ?? const <CharacterBundleLore>[]) {
+      _lore.add(_LoreFields(item));
+    }
+    for (final item in draft?.examples ?? const <CharacterBundleExample>[]) {
+      _examples.add(_ExampleFields(item));
+    }
+  }
+
   @override
   void dispose() {
     _id.dispose();
     _name.dispose();
     _system.dispose();
+    _personality.dispose();
+    _style.dispose();
+    _scenario.dispose();
+    for (final item in _lore) {
+      item.dispose();
+    }
+    for (final item in _examples) {
+      item.dispose();
+    }
     super.dispose();
   }
 
@@ -509,7 +568,18 @@ class _CharacterDraftDialogState extends State<_CharacterDraftDialog> {
     final draft = CharacterBundleDraft(
         id: _id.text.trim(),
         displayName: _name.text.trim(),
-        system: _system.text.trim());
+        system: _system.text.trim(),
+        personality: _personality.text.trim(),
+        style: _style.text.trim(),
+        scenario: _scenario.text.trim(),
+        lore: _lore
+            .map((item) => CharacterBundleLore(
+                name: item.name.text.trim(), text: item.text.text.trim()))
+            .toList(),
+        examples: _examples
+            .map((item) => CharacterBundleExample(
+                role: item.role, text: item.text.text.trim()))
+            .toList());
     final error = draft.validate();
     if (error != null) {
       setState(() => _error = error);
@@ -518,35 +588,209 @@ class _CharacterDraftDialogState extends State<_CharacterDraftDialog> {
     Navigator.of(context).pop(draft);
   }
 
+  Widget _section(String file, String role, TextEditingController controller,
+          {bool required = false}) =>
+      Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(file, style: const TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(width: 8),
+              Text(required ? '필수 · $role' : '선택 · $role',
+                  style:
+                      const TextStyle(fontSize: 12, color: Color(0xffa7bcba))),
+            ]),
+            const SizedBox(height: 6),
+            TextField(
+                controller: controller,
+                minLines: 2,
+                maxLines: 5,
+                decoration: InputDecoration(
+                    labelText: file, border: const OutlineInputBorder())),
+          ]));
+
   @override
   Widget build(BuildContext context) => AlertDialog(
-          title: const Text('Create test character'),
+          title: Text(widget.existing == null
+              ? 'Character bundle 만들기'
+              : 'Character bundle 편집'),
           scrollable: true,
           content: SizedBox(
-              width: 520,
+              width: 620,
               child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const _BundleMap(),
                 TextField(
                     controller: _id,
+                    enabled: widget.existing == null,
                     decoration: const InputDecoration(labelText: 'ID')),
                 TextField(
                     controller: _name,
                     decoration:
                         const InputDecoration(labelText: 'Display name')),
-                TextField(
-                    controller: _system,
-                    minLines: 3,
-                    maxLines: 6,
-                    decoration:
-                        const InputDecoration(labelText: 'System instruction')),
+                _section('system.md', '변하지 않는 최상위 지시문', _system,
+                    required: true),
+                _section('personality.md', '성격·말투의 큰 방향', _personality),
+                _section('style.md', '답변 형식·문체', _style),
+                _section('scenario.md', '현재 역할극/상황', _scenario),
+                const SizedBox(height: 18),
+                _EditorListHeader(
+                    title: 'lore/',
+                    subtitle: '선택 · 번호 파일명 순서로 prompt에 추가',
+                    onAdd: () => setState(
+                        () => _lore.add(_LoreFields.empty(_lore.length + 1)))),
+                ..._lore.asMap().entries.map((entry) => _LoreEditor(
+                    fields: entry.value,
+                    onRemove: () => setState(() {
+                          final item = _lore.removeAt(entry.key);
+                          item.dispose();
+                        }))),
+                const SizedBox(height: 18),
+                _EditorListHeader(
+                    title: 'examples.jsonl',
+                    subtitle: '선택 · user/assistant few-shot turn',
+                    onAdd: () =>
+                        setState(() => _examples.add(_ExampleFields()))),
+                ..._examples.asMap().entries.map((entry) => _ExampleEditor(
+                    fields: entry.value,
+                    onRemove: () => setState(() {
+                          final item = _examples.removeAt(entry.key);
+                          item.dispose();
+                        }))),
                 if (_error != null)
-                  Text(_error!,
-                      style:
-                          TextStyle(color: Theme.of(context).colorScheme.error))
+                  Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(_error!,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)))
               ])),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Cancel')),
-            FilledButton(onPressed: _submit, child: const Text('Create & add'))
+            FilledButton(
+                onPressed: _submit,
+                child: Text(widget.existing == null ? 'Create & add' : '저장'))
           ]);
+}
+
+class _BundleMap extends StatelessWidget {
+  const _BundleMap();
+  @override
+  Widget build(BuildContext context) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+          color: const Color(0xff192726),
+          borderRadius: BorderRadius.circular(10)),
+      child: const Text(
+          'BUNDLE MAP  ·  manifest.json + system.md는 필수\n선택 파일은 비워 두면 bundle에서 제거됩니다.',
+          style:
+              TextStyle(fontSize: 12, height: 1.5, color: Color(0xffb5c9c6))));
+}
+
+class _EditorListHeader extends StatelessWidget {
+  const _EditorListHeader(
+      {required this.title, required this.subtitle, required this.onAdd});
+  final String title, subtitle;
+  final VoidCallback onAdd;
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text(subtitle,
+              style: const TextStyle(fontSize: 12, color: Color(0xffa7bcba))),
+        ])),
+        TextButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add),
+            label: const Text('추가')),
+      ]);
+}
+
+class _LoreFields {
+  _LoreFields(CharacterBundleLore item)
+      : name = TextEditingController(text: item.name),
+        text = TextEditingController(text: item.text);
+  _LoreFields.empty(int ordinal)
+      : name = TextEditingController(
+            text: '${ordinal.toString().padLeft(3, '0')}-lore.md'),
+        text = TextEditingController();
+  final TextEditingController name, text;
+  void dispose() {
+    name.dispose();
+    text.dispose();
+  }
+}
+
+class _ExampleFields {
+  _ExampleFields([CharacterBundleExample? item])
+      : role = item?.role ?? 'user',
+        text = TextEditingController(text: item?.text ?? '');
+  String role;
+  final TextEditingController text;
+  void dispose() => text.dispose();
+}
+
+class _LoreEditor extends StatelessWidget {
+  const _LoreEditor({required this.fields, required this.onRemove});
+  final _LoreFields fields;
+  final VoidCallback onRemove;
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(children: [
+        Row(children: [
+          Expanded(
+              child: TextField(
+                  controller: fields.name,
+                  decoration: const InputDecoration(
+                      labelText: '파일명 (예: 001-world.md)'))),
+          IconButton(
+              onPressed: onRemove,
+              icon: const Icon(Icons.remove_circle_outline),
+              tooltip: 'Lore 제거'),
+        ]),
+        TextField(
+            controller: fields.text,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(labelText: 'Lore 내용')),
+      ]));
+}
+
+class _ExampleEditor extends StatelessWidget {
+  const _ExampleEditor({required this.fields, required this.onRemove});
+  final _ExampleFields fields;
+  final VoidCallback onRemove;
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+            width: 112,
+            child: DropdownButtonFormField<String>(
+                initialValue: fields.role,
+                items: const [
+                  DropdownMenuItem(value: 'user', child: Text('user')),
+                  DropdownMenuItem(value: 'assistant', child: Text('assistant'))
+                ],
+                onChanged: (value) {
+                  if (value != null) fields.role = value;
+                })),
+        const SizedBox(width: 8),
+        Expanded(
+            child: TextField(
+                controller: fields.text,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(labelText: '예시 메시지'))),
+        IconButton(
+            onPressed: onRemove,
+            icon: const Icon(Icons.remove_circle_outline),
+            tooltip: '예시 제거'),
+      ]));
 }

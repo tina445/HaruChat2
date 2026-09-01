@@ -126,6 +126,6 @@ dotnet run --project tools/headless/HaruChat.Headless.csproj -- \
   --model <absolute-gguf-path> --profile <profile.json>
 ```
 
-Flutter probe는 P3/P4 native ABI의 load/generate/cancel/reset/unload을 진단하는 **테스트 host**다. `Character test bench`의 **Create & add**는 앱 문서 영역의 `HaruChatProbe/characters/<id>/`에 위 v1 파일 구조를 생성하고 selector에 등록한다. 선택한 character의 `system.md`는 probe가 생성하는 raw diagnostic prompt 앞에 붙는다.
+Flutter probe는 P3/P4 native ABI의 load/generate/cancel/reset/unload을 진단하는 **테스트 host**다. `Character test bench`의 **Create & add**는 앱 문서 영역의 `HaruChatProbe/characters/<id>/`에 위 v1 파일 구조를 생성하고 selector에 등록한다. 선택한 character의 **character 편집**은 v1의 고정 파일(`manifest.json`, Markdown section, `lore/*.md`, `examples.jsonl`)만 수정하며, 비운 선택 항목은 bundle에서 제거한다. ID는 디렉터리명과의 일치를 보장하기 위해 기존 bundle에서 바꿀 수 없다. 선택한 character의 section과 examples는 probe가 생성하는 raw diagnostic prompt 앞에 붙는다.
 
 이 기능은 bundle 파일·기본 instruction을 빠르게 점검하기 위한 test fixture 도구다. Core loader의 전체 검증, profile 기반 chat template, conversation commit과 Unity의 제품 character UX를 대체하지 않는다. 최종 picker와 production lifecycle은 P6 Unity Presentation 범위다.

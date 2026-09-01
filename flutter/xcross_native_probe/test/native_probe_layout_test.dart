@@ -38,6 +38,20 @@ void main() {
     expect(find.text('메시지를 입력하세요'), findsOneWidget);
   });
 
+  testWidgets('character editor exposes every fixed v1 bundle section',
+      (tester) async {
+    await pumpHarness(tester, const Size(1194, 834));
+    await tester.tap(find.text('character 추가'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('BUNDLE MAP'), findsOneWidget);
+    expect(find.text('personality.md'), findsWidgets);
+    expect(find.text('style.md'), findsWidgets);
+    expect(find.text('scenario.md'), findsWidgets);
+    expect(find.text('lore/'), findsOneWidget);
+    expect(find.text('examples.jsonl'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('iPhone width keeps the masthead and option rail overflow-safe',
       (tester) async {
     await pumpHarness(tester, const Size(320, 568));
