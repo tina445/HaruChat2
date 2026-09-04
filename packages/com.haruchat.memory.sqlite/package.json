@@ -1,0 +1,7 @@
+{
+  "name": "com.haruchat.memory.sqlite",
+  "version": "0.1.0",
+  "displayName": "HaruChat SQLite Memory",
+  "description": "Post-MVP SQLite and FTS5 memory adapter. The iOS SQLite provider is staged at the Apple integration gate.",
+  "unity": "2022.3"
+}

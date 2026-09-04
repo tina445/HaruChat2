@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>HaruChat.Memory.Sqlite</AssemblyName>
+    <RootNamespace>HaruChat.Memory.Sqlite</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" />
+    <!-- Do not pull SQLitePCLRaw.lib.e_sqlite3: Linux uses its system SQLite and iOS is linked at the Apple gate. -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.provider.dynamic_cdecl" Version="2.1.11" />
+  </ItemGroup>
+</Project>

@@ -98,18 +98,18 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 **목표:** provider 독립적인 device-local conversation과 long-term memory를 추가한다.
 
-- **구현 범위:** `IMemoryStore`, `IMemoryRetriever`, SQLite schema/forward migration, session summary, long-term memory, FTS5와 keyword/recency/importance ranking, retention/delete를 구현한다.
+- **구현 범위:** `IMemoryStore`, `IMemoryRetriever`, character별 memory settings를 포함한 SQLite v3 schema/forward migration, session summary, long-term memory, FTS5와 keyword/recency/importance ranking, retention/delete를 구현한다. persistence는 retention이 명시된 opt-in이며, raw transcript 대신 민감정보 필터를 통과한 structured compression summary와 명시적 long-term candidate만 기록한다. 8 Ki default context는 2,048 output reserve를 차감하고, 70%에서 local structured compression으로 55% 이하를 목표로 한다. 96/128 Ki는 device gate를 통과한 실험 override다.
 - **생성 파일/모듈:** `com.haruchat.memory.sqlite`, migration, retriever, memory settings와 privacy control.
 - **의존성:** Phase 5 Character Runtime. MVP Gate와 독립적인 post-MVP milestone이다.
 - **테스트:** empty/upgrade DB, CRUD/transaction, Korean FTS, deterministic ranking, character/session isolation, locked/disk-full/corruption, cancellation과 deletion.
 - **완료 조건:** restart 후 conversation/memory가 복구되고 budget에 맞는 retrieval 결과가 prompt input으로 전달된다. provider 교체는 schema나 retrieval을 변경하지 않는다.
-- **예상 위험:** iOS FTS5 linkage, DB growth, 민감 데이터, concurrent access. single-writer transaction과 실제 Apple link/device smoke로 검증한다.
+- **예상 위험:** iOS FTS5 linkage, DB growth, 민감 데이터, concurrent access. Linux managed adapter는 system SQLite를 dynamic-load하며 single-writer transaction을 검증한다. iOS SQLite provider link와 device smoke는 macOS/iPad gate로 보류한다.
 
 ## Phase 8 — Agent와 허용목록 Tool
 
 **목표:** 모델이 등록되고 권한이 확인된 tool만 구조화 호출하도록 한다.
 
-- **구현 범위:** bounded `AgentRuntime`, `ToolRegistry`, `ITool`, JSON schema validation, deny-by-default permission, timeout/cancellation, result 재주입을 구현한다. `time`, `random`, read-only `lore.search`부터 시작한다.
+- **구현 범위:** bounded `AgentRuntime`, immutable `ToolRegistry`, typed `ITool` call/result, JSON object/schema-required validation, authorization/approval, timeout/cancellation, result 재주입을 구현한다. `time`, `random`, read-only `lore.search`와 `memory.search`, 승인형 `memory.write`를 제공한다.
 - **생성 파일/모듈:** agent/tool contracts, mock tools, permission policy, audit-safe result와 사용자 승인 hook.
 - **의존성:** Phase 4 ModelEvent/capability와 Phase 5 request loop. Memory tool은 Phase 7 이후다.
 - **테스트:** unknown/duplicate tool, malformed argument, denial, timeout/cancel, max iteration, oversized result, tool 지원/미지원 adapter.
@@ -131,7 +131,7 @@ Memory, Agent/Tool, Live2D와 remote provider는 M4 MVP의 필수 범위가 아�
 
 **목표:** Character/Agent 코드를 바꾸지 않고 선택 가능한 remote model을 추가한다.
 
-- **구현 범위:** Base URL/API key/model ID/timeout/generation config, SSE streaming, capability, usage, cancellation, normalized error와 `RemotePrivacyPolicy`를 구현한다. 자동 fallback/routing은 제외한다.
+- **구현 범위:** Base URL/API key reference/model ID/timeout/generation config, explicit opt-in, SSE streaming, capability, usage, cancellation, normalized error와 remote privacy projection을 구현한다. 장기 memory와 tool result는 기본 요청에서 제외하며 자동 fallback/routing은 제외한다.
 - **생성 파일/모듈:** remote adapter package, secure configuration provider, privacy filter, mock HTTP conformance suite와 explicit model registration.
 - **의존성:** Phase 4 adapter/router와 Phase 5 Character Runtime. Tool support는 Phase 8 계약을 재사용한다.
 - **테스트:** local mock server로 SSE chunking, HTTP error, timeout, cancel, malformed payload, usage/tool event와 privacy exclusion. 실제 API key test는 opt-in이다.

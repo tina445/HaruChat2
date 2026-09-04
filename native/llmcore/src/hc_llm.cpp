@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <condition_variable>
 #include <cmath>
 #include <cstddef>
@@ -106,6 +107,7 @@ struct hc_llm_runtime : HandleHeader {
 struct hc_llm_model : HandleHeader {
   hc_llm_runtime *runtime = nullptr;
   std::string path;
+  bool vocab_only = false;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
   llama_model *native_model = nullptr;
 #endif
@@ -355,12 +357,15 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
       return;
     }
     const int32_t chunk = std::min(prompt_batch, count - offset);
-    if (llama_decode(context, llama_batch_get_one(prompt_tokens.data() + offset, chunk)) != 0) {
+    const int32_t decode_status = llama_decode(context, llama_batch_get_one(prompt_tokens.data() + offset, chunk));
+    if (decode_status != 0) {
       PendingEvent terminal{};
       terminal.type = job->cancel_requested.load() ? HC_LLM_EVENT_CANCELLED : HC_LLM_EVENT_ERROR;
       terminal.terminal = true;
       terminal.sequence = ++sequence;
-      if (terminal.type == HC_LLM_EVENT_ERROR) terminal.payload = "prompt evaluation failed";
+      if (terminal.type == HC_LLM_EVENT_ERROR) {
+        terminal.payload = decode_status == 1 ? "context limit reached" : "prompt evaluation failed";
+      }
       publish_terminal(job, std::move(terminal));
       return;
     }
@@ -386,6 +391,7 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
   std::string pending_utf8;
   const uint32_t limit = max_tokens == 0 ? 64U : max_tokens;
   bool decode_failed = false;
+  bool decode_failed_context_limit = false;
   for (uint32_t i = 0; i < limit && !job->cancel_requested.load(); ++i) {
     const llama_token token = llama_sampler_sample(sampler, context, -1);
     if (llama_vocab_is_eog(vocab, token)) break;
@@ -412,9 +418,11 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
       }
     }
     llama_token decoded_token = token;
-    if (llama_decode(context, llama_batch_get_one(&decoded_token, 1)) != 0) {
+    const int32_t decode_status = llama_decode(context, llama_batch_get_one(&decoded_token, 1));
+    if (decode_status != 0) {
       if (job->cancel_requested.load()) break;
       decode_failed = true;
+      if (decode_status == 1) decode_failed_context_limit = true;
       break;
     }
   }
@@ -425,7 +433,8 @@ void run_llama_generation(hc_llm_job *job, std::string prompt, uint32_t max_toke
   if (job->cancel_requested.load()) terminal.type = HC_LLM_EVENT_CANCELLED;
   else if (decode_failed || !pending_utf8.empty()) {
     terminal.type = HC_LLM_EVENT_ERROR;
-    terminal.payload = decode_failed ? "generation decode failed" : "incomplete UTF-8 token sequence";
+    terminal.payload = decode_failed ? (decode_failed_context_limit ? "context limit reached" : "generation decode failed")
+                                     : "incomplete UTF-8 token sequence";
   } else terminal.type = HC_LLM_EVENT_COMPLETED;
   {
     std::lock_guard<std::mutex> lock(job->mutex);
@@ -453,6 +462,10 @@ const char *hc_llm_status_message(hc_llm_status status) {
     case HC_LLM_STATUS_CANCELLED: return "cancelled";
     case HC_LLM_STATUS_UNSUPPORTED: return "unsupported";
     case HC_LLM_STATUS_INTERNAL_ERROR: return "internal error";
+    case HC_LLM_STATUS_NOT_FOUND: return "model file not found";
+    case HC_LLM_STATUS_ACCESS_DENIED: return "model file access denied";
+    case HC_LLM_STATUS_MODEL_LOAD_FAILED: return "model initialization failed";
+    case HC_LLM_STATUS_CONTEXT_INIT_FAILED: return "context initialization failed";
   }
   return "unknown status";
 }
@@ -549,7 +562,11 @@ hc_llm_status hc_llm_model_load(hc_llm_runtime *runtime, const char *path_utf8,
   *out_model = nullptr;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-    if (options->struct_size < sizeof(*options) || options->reserved0 != 0 || options->reserved1 != 0)
+    if (options->struct_size < HC_LLM_MODEL_LOAD_OPTIONS_V1_SIZE || options->reserved0 != 0 || options->reserved1 != 0 ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_model_load_options, load_flags), sizeof(options->load_flags)) &&
+         (options->load_flags & ~HC_LLM_MODEL_LOAD_FLAG_VOCAB_ONLY) != 0) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_model_load_options, reserved2), sizeof(options->reserved2)) &&
+         options->reserved2 != 0))
       return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
   const size_t path_length = std::strlen(path_utf8);
@@ -557,11 +574,23 @@ hc_llm_status hc_llm_model_load(hc_llm_runtime *runtime, const char *path_utf8,
                                                static_cast<uint32_t>(path_length))) {
     return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
+  {
+    errno = 0;
+    std::ifstream readable(path_utf8, std::ios::binary);
+    if (!readable.is_open()) {
+      return errno == ENOENT ? HC_LLM_STATUS_NOT_FOUND :
+          (errno == EACCES ? HC_LLM_STATUS_ACCESS_DENIED : HC_LLM_STATUS_IO_ERROR);
+    }
+  }
   auto *model = new hc_llm_model();
   model->runtime = runtime;
   model->path = path_utf8;
+  model->vocab_only = options != nullptr &&
+      has_trailing_field(options->struct_size, offsetof(hc_llm_model_load_options, load_flags), sizeof(options->load_flags)) &&
+      (options->load_flags & HC_LLM_MODEL_LOAD_FLAG_VOCAB_ONLY) != 0;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
   llama_model_params params = llama_model_default_params();
+  params.vocab_only = model->vocab_only;
 #if defined(__APPLE__)
   // Device probes must exercise the Metal backend instead of silently falling
   // back to CPU-only layers. Mobile sizing is a later profile/config concern.
@@ -570,7 +599,7 @@ hc_llm_status hc_llm_model_load(hc_llm_runtime *runtime, const char *path_utf8,
   model->native_model = llama_model_load_from_file(path_utf8, params);
   if (model->native_model == nullptr) {
     delete model;
-    return HC_LLM_STATUS_IO_ERROR;
+    return HC_LLM_STATUS_MODEL_LOAD_FAILED;
   }
 #else
   std::ifstream input(path_utf8, std::ios::binary);
@@ -607,18 +636,105 @@ hc_llm_status hc_llm_model_get_metadata(const hc_llm_model *model,
                                         hc_llm_model_metadata *out_metadata) {
   if (!valid_model(model) || out_metadata == nullptr) return HC_LLM_STATUS_INVALID_ARGUMENT;
   if (out_metadata->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
-  if (out_metadata->struct_size < sizeof(*out_metadata)) return HC_LLM_STATUS_INVALID_ARGUMENT;
-  std::memset(out_metadata, 0, sizeof(*out_metadata));
+  const uint32_t caller_size = out_metadata->struct_size;
+  if (caller_size < HC_LLM_MODEL_METADATA_V1_SIZE) return HC_LLM_STATUS_INVALID_ARGUMENT;
+  std::memset(out_metadata, 0, std::min<size_t>(caller_size, sizeof(*out_metadata)));
   out_metadata->struct_size = sizeof(*out_metadata);
   out_metadata->abi_version = HC_LLM_ABI_VERSION;
 #if defined(HC_LLM_WITH_LLAMA_CPP)
   const int32_t training_context = llama_model_n_ctx_train(model->native_model);
   out_metadata->training_context_tokens = training_context > 0 ? static_cast<uint32_t>(training_context) : 0U;
   llama_model_desc(model->native_model, out_metadata->description, sizeof(out_metadata->description));
+  if (has_trailing_field(caller_size, offsetof(hc_llm_model_metadata, architecture), sizeof(out_metadata->architecture))) {
+    llama_model_meta_val_str(model->native_model, "general.architecture", out_metadata->architecture,
+                             sizeof(out_metadata->architecture));
+  }
 #else
   copy_text(out_metadata->description, sizeof(out_metadata->description), "bootstrap GGUF fixture");
+  if (has_trailing_field(caller_size, offsetof(hc_llm_model_metadata, architecture), sizeof(out_metadata->architecture))) {
+    copy_text(out_metadata->architecture, sizeof(out_metadata->architecture), "bootstrap");
+  }
 #endif
   return HC_LLM_STATUS_OK;
+}
+
+hc_llm_status hc_llm_model_count_tokens(const hc_llm_model *model, const uint8_t *text_utf8,
+                                        uint32_t text_bytes, uint32_t *out_token_count) {
+  if (!valid_model(model)) return HC_LLM_STATUS_INVALID_HANDLE;
+  if (out_token_count == nullptr || !valid_utf8(text_utf8, text_bytes)) {
+    return HC_LLM_STATUS_INVALID_ARGUMENT;
+  }
+  *out_token_count = 0;
+  if (text_bytes == 0) return HC_LLM_STATUS_OK;
+  // Serialize with unload so the vocabulary remains valid for the full
+  // tokenizer call. Tokenization itself does not mutate model state.
+  std::lock_guard<std::mutex> lock(model->runtime->mutex);
+  if (!model->alive.load()) return HC_LLM_STATUS_INVALID_HANDLE;
+#if defined(HC_LLM_WITH_LLAMA_CPP)
+  if (model->native_model == nullptr || text_bytes > static_cast<uint32_t>(INT32_MAX)) {
+    return HC_LLM_STATUS_INVALID_ARGUMENT;
+  }
+  const llama_vocab *vocab = llama_model_get_vocab(model->native_model);
+  const int32_t token_count = llama_tokenize(vocab, reinterpret_cast<const char *>(text_utf8),
+                                             static_cast<int32_t>(text_bytes), nullptr, 0, true, true);
+  if (token_count == INT32_MIN) return HC_LLM_STATUS_INTERNAL_ERROR;
+  const int32_t required = token_count < 0 ? -token_count : token_count;
+  if (required < 0) return HC_LLM_STATUS_INTERNAL_ERROR;
+  *out_token_count = static_cast<uint32_t>(required);
+#else
+  // The bootstrap backend has no GGUF vocabulary. Counting validated UTF-8
+  // code points keeps tests and preflight behavior deterministic until a real
+  // tokenizer-capable backend is selected.
+  *out_token_count = static_cast<uint32_t>(split_utf8(std::string(
+      reinterpret_cast<const char *>(text_utf8), text_bytes)).size());
+#endif
+  return HC_LLM_STATUS_OK;
+}
+
+hc_llm_status hc_llm_model_apply_chat_template(
+    const hc_llm_model *model, const hc_llm_chat_message *messages,
+    uint32_t message_count, uint32_t add_assistant, uint8_t *buffer_utf8,
+    uint32_t buffer_bytes, uint32_t *out_required_bytes) {
+  if (!valid_model(model) || messages == nullptr || message_count == 0 ||
+      out_required_bytes == nullptr || (buffer_bytes != 0 && buffer_utf8 == nullptr) ||
+      add_assistant > 1) return HC_LLM_STATUS_INVALID_ARGUMENT;
+  *out_required_bytes = 0;
+#if defined(HC_LLM_WITH_LLAMA_CPP)
+  std::vector<std::string> contents;
+  std::vector<llama_chat_message> native_messages;
+  contents.reserve(message_count);
+  native_messages.reserve(message_count);
+  for (uint32_t i = 0; i < message_count; ++i) {
+    const auto &message = messages[i];
+    if (message.role_utf8 == nullptr ||
+        (message.content_utf8 == nullptr && message.content_bytes != 0) ||
+        !valid_utf8(reinterpret_cast<const uint8_t *>(message.role_utf8),
+                    static_cast<uint32_t>(std::strlen(message.role_utf8))) ||
+        !valid_utf8(message.content_utf8, message.content_bytes)) return HC_LLM_STATUS_INVALID_ARGUMENT;
+    // A zero-byte content payload is valid, but must not construct a C++
+    // string from a null pointer even when its length is zero.
+    contents.emplace_back(message.content_utf8 == nullptr
+        ? std::string()
+        : std::string(reinterpret_cast<const char *>(message.content_utf8), message.content_bytes));
+    native_messages.push_back({ message.role_utf8, contents.back().c_str() });
+  }
+  std::lock_guard<std::mutex> lock(model->runtime->mutex);
+  if (!model->alive.load() || model->native_model == nullptr) return HC_LLM_STATUS_INVALID_HANDLE;
+  const char *template_text = llama_model_chat_template(model->native_model, nullptr);
+  if (template_text == nullptr) return HC_LLM_STATUS_UNSUPPORTED;
+  const int32_t required = llama_chat_apply_template(template_text, native_messages.data(), native_messages.size(),
+                                                     add_assistant != 0, nullptr, 0);
+  if (required < 0) return HC_LLM_STATUS_UNSUPPORTED;
+  if (static_cast<uint64_t>(required) > UINT32_MAX - 1U) return HC_LLM_STATUS_INTERNAL_ERROR;
+  *out_required_bytes = static_cast<uint32_t>(required) + 1U;
+  if (buffer_utf8 == nullptr || buffer_bytes == 0) return HC_LLM_STATUS_OK;
+  if (buffer_bytes < *out_required_bytes) return HC_LLM_STATUS_INVALID_ARGUMENT;
+  const int32_t written = llama_chat_apply_template(template_text, native_messages.data(), native_messages.size(),
+                                                    add_assistant != 0, reinterpret_cast<char *>(buffer_utf8), required + 1);
+  return written == required ? HC_LLM_STATUS_OK : HC_LLM_STATUS_INTERNAL_ERROR;
+#else
+  return HC_LLM_STATUS_UNSUPPORTED;
+#endif
 }
 
 hc_llm_status hc_llm_model_unload(hc_llm_model *model) {
@@ -641,14 +757,33 @@ hc_llm_status hc_llm_model_unload(hc_llm_model *model) {
 hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_options *options,
                                     hc_llm_context **out_context) {
   if (!valid_model(model) || out_context == nullptr) return HC_LLM_STATUS_INVALID_ARGUMENT;
+  if (model->vocab_only) return HC_LLM_STATUS_UNSUPPORTED;
   *out_context = nullptr;
   if (options != nullptr) {
     if (options->abi_version != HC_LLM_ABI_VERSION) return HC_LLM_STATUS_ABI_MISMATCH;
     if (options->struct_size < HC_LLM_CONTEXT_OPTIONS_V1_SIZE || options->reserved != 0 ||
         (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, reserved1),
-                            sizeof(options->reserved1)) && options->reserved1 != 0)) {
+                            sizeof(options->reserved1)) && options->reserved1 != 0) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, kv_cache_type_k),
+                            sizeof(options->kv_cache_type_k)) &&
+         options->kv_cache_type_k > HC_LLM_KV_CACHE_TYPE_Q8_0) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, kv_cache_type_v),
+                            sizeof(options->kv_cache_type_v)) &&
+         options->kv_cache_type_v > HC_LLM_KV_CACHE_TYPE_Q8_0) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, flash_attention),
+                            sizeof(options->flash_attention)) &&
+         options->flash_attention > HC_LLM_FLASH_ATTENTION_ENABLED) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, offload_kqv),
+                            sizeof(options->offload_kqv)) && options->offload_kqv > 1) ||
+        (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, reserved2),
+                            sizeof(options->reserved2)) && options->reserved2 != 0)) {
       return HC_LLM_STATUS_INVALID_ARGUMENT;
     }
+    if (has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, ubatch_size),
+                           sizeof(options->ubatch_size)) && options->ubatch_size != 0 &&
+        has_trailing_field(options->struct_size, offsetof(hc_llm_context_options, batch_size),
+                           sizeof(options->batch_size)) && options->batch_size != 0 &&
+        options->ubatch_size > options->batch_size) return HC_LLM_STATUS_INVALID_ARGUMENT;
   }
   auto *context = new hc_llm_context();
   context->runtime = model->runtime;
@@ -672,10 +807,37 @@ hc_llm_status hc_llm_context_create(hc_llm_model *model, const hc_llm_context_op
       params.n_batch = options->batch_size;
     }
   }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, ubatch_size), sizeof(options->ubatch_size)) && options->ubatch_size != 0) {
+    if (options->ubatch_size > params.n_batch || options->ubatch_size > static_cast<uint32_t>(INT32_MAX)) {
+      delete context;
+      return HC_LLM_STATUS_INVALID_ARGUMENT;
+    }
+    params.n_ubatch = options->ubatch_size;
+  }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, kv_cache_type_k), sizeof(options->kv_cache_type_k))) {
+    if (options->kv_cache_type_k == HC_LLM_KV_CACHE_TYPE_F16) params.type_k = GGML_TYPE_F16;
+    else if (options->kv_cache_type_k == HC_LLM_KV_CACHE_TYPE_Q8_0) params.type_k = GGML_TYPE_Q8_0;
+  }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, kv_cache_type_v), sizeof(options->kv_cache_type_v))) {
+    if (options->kv_cache_type_v == HC_LLM_KV_CACHE_TYPE_F16) params.type_v = GGML_TYPE_F16;
+    else if (options->kv_cache_type_v == HC_LLM_KV_CACHE_TYPE_Q8_0) params.type_v = GGML_TYPE_Q8_0;
+  }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, flash_attention), sizeof(options->flash_attention))) {
+    if (options->flash_attention == HC_LLM_FLASH_ATTENTION_DISABLED) params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    else if (options->flash_attention == HC_LLM_FLASH_ATTENTION_ENABLED) params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+  }
+  if (options != nullptr && has_trailing_field(options->struct_size,
+      offsetof(hc_llm_context_options, offload_kqv), sizeof(options->offload_kqv))) {
+    params.offload_kqv = options->offload_kqv != 0;
+  }
   context->native_context = llama_init_from_model(model->native_model, params);
   if (context->native_context == nullptr) {
     delete context;
-    return HC_LLM_STATUS_IO_ERROR;
+    return HC_LLM_STATUS_CONTEXT_INIT_FAILED;
   }
 #endif
   {

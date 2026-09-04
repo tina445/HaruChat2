@@ -15,7 +15,7 @@ namespace HaruChat.Unity
     /// <summary>Unity-free ownership boundary for the foreground model and character session.</summary>
     public sealed class HaruChatCompositionRoot : IAsyncDisposable
     {
-        private CharacterCatalog? _characters; private CharacterDefinition? _selectedCharacter; private ModelProfile? _profile;
+        private CharacterCatalog? _characters; private CharacterDefinition? _selectedCharacter; private ModelProfile? _profile; private ModelProfileCatalog? _profiles;
         private string? _bundledCharactersDirectory; private string? _importedCharactersDirectory; private string? _profilePath;
         private LlamaCppBackend? _backend; private IModelSession? _session; private CharacterChatService? _chat; private CancellationTokenSource? _generation;
         public HaruChatClientState State { get; private set; } = HaruChatClientState.NoModel;
@@ -31,6 +31,8 @@ namespace HaruChat.Unity
             Directory.CreateDirectory(importedCharactersDirectory); ReloadCharacters();
             _selectedCharacter = _characters.Characters.First();
             _profile = ModelProfileLoader.Load(profilePath);
+            var profileDirectory = Path.GetDirectoryName(Path.GetFullPath(profilePath))!;
+            _profiles = new ModelProfileCatalog(Directory.GetFiles(profileDirectory, "*.json").Select(ModelProfileLoader.Load));
             Notify();
         }
 
@@ -61,9 +63,10 @@ namespace HaruChat.Unity
             var backend = new LlamaCppBackend();
             try
             {
-                var adapter = new LocalModelAdapter("local", backend, new ModelConfig(modelPath, _profile.Id), _profile);
+                var adapter = new LocalModelAdapter("local", backend, new ModelConfig(modelPath), _profiles!);
                 var session = await adapter.CreateSessionAsync(new ModelSessionOptions(_profile.ContextWindowTokens), cancellationToken).ConfigureAwait(false);
-                _backend = backend; _session = session; _chat = new CharacterChatService(_selectedCharacter, new Conversation(), session, new PromptCompiler(), _profile.ContextWindowTokens);
+                var selectedProfile = adapter.SelectedProfile ?? throw new InvalidOperationException("No model profile was selected.");
+                _backend = backend; _session = session; _chat = new CharacterChatService(_selectedCharacter, new Conversation(), session, new PromptCompiler(), selectedProfile.ContextWindowTokens, maximumOutputTokens: selectedProfile.Defaults.MaximumOutputTokens);
                 ModelPath = modelPath; Set(HaruChatClientState.Ready, Path.GetFileName(modelPath) + " 준비됨");
             }
             catch { await backend.DisposeAsync().ConfigureAwait(false); Set(HaruChatClientState.Error, "모델을 불러오지 못했습니다."); throw; }
@@ -75,7 +78,7 @@ namespace HaruChat.Unity
             await UnloadAsync(CancellationToken.None).ConfigureAwait(false); Set(HaruChatClientState.Loading, "Editor 미리보기를 준비하는 중…");
             var adapter = new MockModelAdapter("preview", _ => new[] { ModelEvent.Token("지금은 Unity Editor 미리보기예요. iPad에서 GGUF를 선택하면 Haru로 응답할게요."), ModelEvent.Completed() });
             _session = await adapter.CreateSessionAsync(new ModelSessionOptions(_profile.ContextWindowTokens), cancellationToken).ConfigureAwait(false);
-            _chat = new CharacterChatService(_selectedCharacter, new Conversation(), _session, new PromptCompiler(), _profile.ContextWindowTokens);
+            _chat = new CharacterChatService(_selectedCharacter, new Conversation(), _session, new PromptCompiler(), _profile.ContextWindowTokens, maximumOutputTokens: _profile.Defaults.MaximumOutputTokens);
             ModelPath = "Editor preview"; Set(HaruChatClientState.Ready, "Editor 미리보기 준비됨");
         }
 
@@ -93,6 +96,7 @@ namespace HaruChat.Unity
         public void CancelGeneration() { if (_generation == null) return; Set(HaruChatClientState.Cancelling, "응답을 멈추는 중…"); _generation.Cancel(); }
         public async Task NewConversationAsync(CancellationToken cancellationToken) { if (_chat == null) return; await _chat.NewConversationAsync(cancellationToken).ConfigureAwait(false); Set(HaruChatClientState.Ready, "새 대화를 시작했습니다."); }
         public async Task<ModelDiagnostics?> GetDiagnosticsAsync(CancellationToken cancellationToken) { return _session == null ? null : await _session.GetDiagnosticsAsync(cancellationToken).ConfigureAwait(false); }
+        public async Task<ContextWindowStatus?> GetContextWindowStatusAsync(CancellationToken cancellationToken) { return _chat == null ? null : await _chat.GetContextWindowStatusAsync(cancellationToken).ConfigureAwait(false); }
         public async Task UnloadAsync(CancellationToken cancellationToken)
         {
             _generation?.Cancel(); var chat = _chat; _chat = null; _session = null; ModelPath = null;

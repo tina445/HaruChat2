@@ -24,8 +24,10 @@ class HcLlmFlutter {
       );
 
   static Future<String?> chooseModel() => _method.invokeMethod<String>('chooseModel');
-  static Future<String> load(String path) => _invoke('load', {'path': path});
-  static Future<String> generate(String prompt) => _invoke('generate', {'prompt': prompt});
+  static Future<String> load(String path, {required int contextWindowTokens}) =>
+      _invoke('load', {'path': path, 'contextWindowTokens': contextWindowTokens});
+  static Future<String> generate(String prompt, {required int maximumOutputTokens}) =>
+      _invoke('generate', {'prompt': prompt, 'maximumOutputTokens': maximumOutputTokens});
   static Future<String> cancel() => _invoke('cancel');
   static Future<String> reset() => _invoke('reset');
   static Future<String> unload() => _invoke('unload');

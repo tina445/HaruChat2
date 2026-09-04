@@ -21,7 +21,7 @@ MVP에서는 다음 제약을 의도적으로 받아들인다.
 - context 하나에서 동시에 실행하는 generation은 최대 1개다.
 - 모델과 캐릭터 선택은 수동이며, model routing과 background preloading은 하지 않는다.
 - generation은 text-only이며 image input과 vision projector를 포함하지 않는다.
-- Memory, Agent/Tool 실행, Live2D, 원격 provider는 구현하지 않고 port와 데이터 경계만 보존한다.
+- Memory, Agent/Tool 실행과 OpenAI-compatible 원격 provider는 post-MVP 확장으로 구현하며, Live2D는 여전히 Presentation 확장 지점으로만 유지한다.
 
 ## 2. 핵심 원칙
 
@@ -77,6 +77,7 @@ flowchart TB
 │   ├── com.haruchat.runtime/          # Domain, Application, Character Runtime
 │   ├── com.haruchat.llamacpp/         # ILocalModelBackend managed adapter/P/Invoke
 │   ├── com.haruchat.memory.sqlite/    # post-MVP SQLite+FTS5 adapter
+│   ├── com.haruchat.openai/           # opt-in OpenAI-compatible HTTP/SSE adapter
 │   └── com.haruchat.unity/            # Unity Presentation integration
 ├── native/
 │   ├── llmcore/                       # hc_llm_* C ABI와 테스트
@@ -166,10 +167,10 @@ LlamaCppBackend → hc_llm_* → llama.cpp
 - 호환 model 식별 조건 또는 사용자가 선택한 binding
 - chat template 및 BOS/EOS/stop sequence 정책
 - context window와 generation default/limit
-- tool call 및 reasoning marker/parser 설정
+- tool call 및 필요한 경우에만 사용하는 non-standard reasoning output marker/parser override. 기본 adapter는 `<think>…</think>`와 `<|im_end|>`를 profile 없이 정규화하고, `reasoningOutput`은 다른 delimiter 또는 `show`/`separate` 정책이 검증될 때만 선언한다.
 - tokenizer/template capability 요구사항
 
-`ModelProfile`은 GGUF path 자체나 비밀정보를 저장하지 않는다. 실제 모델 설치 정보는 runtime configuration의 path와 checksum으로 관리한다. profile은 load 전에 schema와 capability를 검증하며, profile을 바꾸는 동작은 기존 session/context를 폐기한 뒤 새 session을 만든다. `CharacterChatService.ReplaceSessionAsync`는 composition root가 만든 새 session을 직렬화하여 교체하고, active generation을 cancel한 뒤 기존 conversation을 reset한다. 따라서 model/profile/character state를 한 context에 섞지 않는다.
+`ModelProfile`은 GGUF path 자체나 비밀정보를 저장하지 않는다. 실제 모델 설치 정보는 runtime configuration의 path와 checksum으로 관리한다. profile ID를 지정하지 않으면 `LocalModelAdapter`는 먼저 로드된 GGUF의 `tokenizer.chat_template`을 native C ABI로 적용한다. 따라서 정상적인 template을 포함한 새 GGUF는 파일 선택만으로 도입되며, quantization별 manifest·profile JSON·adapter class가 필요하지 않다. template을 지원하지 않는 legacy GGUF만 metadata가 정확히 하나와 일치하는 catalog profile을 fallback으로 사용한다. 명시 profile ID는 embedded template보다 우선한다. 기본 adapter는 `<think>…</think>`와 `<|im_end|>`를 profile 없이 정규화한다. profile은 tool, 비표준 reasoning delimiter, stop sequence, context/generation policy처럼 GGUF template만으로 표현되지 않는 예외적 정책만 제공한다. `reasoningOutput` override는 reasoning을 제거·표시·별도 `ModelEvent.Reasoning` channel로 전달할 때 사용하며 raw marker 자체는 노출하지 않는다. profile을 바꾸는 동작은 기존 session/context를 폐기한 뒤 새 session을 만든다. `CharacterChatService.ReplaceSessionAsync`는 composition root가 만든 새 session을 직렬화하여 교체하고, active generation을 cancel한 뒤 기존 conversation을 reset한다. 따라서 model/profile/character state를 한 context에 섞지 않는다.
 
 `ILocalModelBackend`는 다음 기능에만 한정한다. M1은 runtime package에 이 port와 handle/options/event/metrics DTO 및 mock contract test를 선언할 수 있지만 native P/Invoke와 `LlamaCppBackend` concrete implementation은 Phase 4의 책임이다.
 
@@ -197,12 +198,18 @@ handle은 managed 안전 wrapper이며 반드시 `IAsyncDisposable`/`SafeHandle`
 | `CharacterCatalog` | 유효한 bundle을 발견하고 case-insensitive한 전역 character ID 중복을 거부한다. |
 | `CharacterBundleLoader` | 파일 경계와 schema를 검증하고 immutable `CharacterDefinition`을 만든다. |
 | `PromptCompiler` | Character section, runtime input, conversation, 추후 memory를 provider-neutral `PromptPlan`/`ModelMessage`로 구성한다. |
-| `Conversation` | turn 순서와 상태를 보존하는 Domain aggregate. native context나 Unity object를 소유하지 않는다. |
+| `Conversation` | turn 순서와 상태, process-local 원문 archive 및 압축 summary를 보존하는 Domain aggregate. native context나 Unity object를 소유하지 않는다. |
 | `CharacterChatService` | character, conversation, model session의 수명을 조정하고 generation stream을 Application 바깥에 전달한다. |
 
 `PromptCompiler`는 Qwen chat template을 출력하지 않는다. 의미 있는 role/section을 가진 provider-neutral `PromptPlan`을 만들고, `LocalModelAdapter`가 선택된 `ModelProfile`에 맞춰 serialize한다. 따라서 같은 캐릭터가 추후 OpenAI-compatible adapter에서도 그대로 동작한다.
 
-prompt budget이 context 한도를 넘으면 compiler는 system/현재 character instruction/최신 user turn을 보존하고 오래된 완결 turn부터 결정론적으로 제외한다. 어떤 turn이 제외되었는지는 metrics/diagnostics로 남긴다. 그래도 한도를 맞출 수 없으면 암묵적으로 자르지 않고 `ContextBudgetExceeded` 오류를 반환한다. post-MVP Memory 요약은 이 정책 앞에 끼워 넣지 않고 별도의 `IMemoryRetriever` 결과로만 입력된다.
+8 Ki 기본 context에서는 2,048-token 출력 reserve를 먼저 차감한다. 다음 요청의 실제 local tokenizer count가 prompt budget의 70%에 도달하면 `CharacterChatService`가 최근 8개 완료 turn과 새 입력을 남기고 오래된 원문 archive를 local-only structured summary로 재생성해 55% 이하를 목표로 줄인다. summary는 memory 뒤·최근 원문 앞의 system section이며 memory와 별도 budget을 갖는다. 실패하면 compiler는 system/현재 character instruction/최신 user turn을 보존하고 오래된 완결 turn부터 결정론적으로 제외한다. 필수 section과 최신 입력만으로도 맞지 않으면 생성 전에 `ContextBudgetExceeded`를 반환한다. native decode의 context exhaustion도 같은 구조화 오류로 map한다. KV cache shift는 사용하지 않고 full reset/replay를 유지한다. 96/128 Ki는 memory-pressure device gate를 통과한 explicit override일 때만 사용한다.
+
+### Long-context native allocation policy
+
+`n_ctx`는 KV cache를 선할당하므로 model weight와 별개로 32 Ki 이상의 load-stage failure를 만들 수 있다. `n_batch`는 한 번의 logical decode 상한, `n_ubatch`는 graph/compute buffer 예약을 좌우하는 physical micro-batch이며 같은 값으로 크게 만들지 않는다. local default는 `n_batch=256`, `n_ubatch=min(n_batch, 128)`, K/V cache `Q8_0`, Flash Attention enabled, KQV offload enabled다. 이는 F16/F16 KV보다 cache footprint를 약 절반으로 줄이는 3B~7B long-context baseline이다.
+
+`hc_llm_context_options`의 trailing ABI fields는 K/V를 각각 `F16` 또는 `Q8_0`, Flash Attention auto/disabled/enabled, KQV CPU/accelerator offload와 physical micro-batch로 선택하게 한다. Q8 V cache는 Flash Attention이 가능한 backend에서만 허용하며, context init failure는 recoverable error로 surface한다. 32/64 Ki는 `n_batch=512`, `n_ubatch=128`까지, 128 Ki는 `n_batch=256`, `n_ubatch=64`부터 physical-device telemetry로 상향한다. exact admissible context는 parameter count가 아니라 GGUF의 layer별 KV dimensions와 available unified memory로 판정한다. Apple에서는 model weight, Metal compute buffers, KV cache가 같은 unified memory를 공유하므로 all-layer Metal offload의 process termination(Jetsam)은 ordinary `context init failed`와 구별해 device log/pressure telemetry로 확인해야 한다.
 
 ### 5.4 핵심 타입 분류와 운영 특성
 
@@ -278,7 +285,7 @@ sequenceDiagram
     App->>PC: Compile(character, conversation, optional memory)
     PC-->>App: PromptPlan
     App->>MA: session.GenerateAsync(ModelRequest)
-    MA->>MA: ModelProfile template 적용
+    MA->>BE: GGUF embedded chat template 적용 (없으면 ModelProfile fallback)
     MA->>BE: StartGenerationAsync(context, LocalGenerationInput)
     BE->>ABI: hc_llm_job_start
     ABI->>LLM: native worker에서 decode
@@ -447,17 +454,21 @@ M4 iPad device probe 결과가 baseline의 canonical source가 되며 이후 REQ
 
 Domain에는 `MemoryItem`, `MemoryQuery` 같은 provider-neutral value만 둔다. Application port인 `IMemoryStore`와 `IMemoryRetriever`를 SQLite+FTS5 adapter가 구현한다. `PromptCompiler`는 검색 결과를 입력으로 받을 수 있지만 SQL, FTS rank, embedding 구현을 알지 못한다.
 
-Memory는 conversation commit 이후 명시적 정책에 따라 기록하고 generation 전에 조회한다. 캐릭터별/사용자별 namespace를 분리하며 clear/export/retention 기능을 제공하기 전에는 영구 저장을 기본 활성화하지 않는다. SQLite 오류가 model session이나 canonical conversation을 손상시키지 않도록 독립 transaction/error boundary를 둔다.
+Memory는 conversation commit 이후 명시적 정책에 따라 기록하고 generation 전에 조회한다. `MemorySettings`는 character별 opt-in, retention, 최대 retrieval 수, memory prompt token budget과 이전 session summary 사용 여부를 보관한다. `MemoryPersistenceOptions`는 기본 비활성이며 활성화에는 양의 retention 기간이 필요하다. 압축 summary는 opt-in 및 retention이 모두 있을 때만 session에 저장하며 민감정보/정밀 위치 필터에 걸리면 앱 메모리에만 남긴다. 장기 기억에는 명시적 `IMemoryCandidateFactory` 후보만 보관한다. `PromptCompiler`는 memory를 examples 뒤·conversation 앞에 넣되 `MemoryPromptPolicy`의 item/token/summary 상한 밖 항목은 넣지 않는다. SQLite 오류가 model session이나 canonical conversation을 손상시키지 않도록 독립 transaction/error boundary를 둔다.
+
+SQLite adapter의 v2는 `schema_migrations`, `memory_sessions`, `memory_items`, `memory_settings`, external-content `memory_items_fts`와 insert/update/delete 동기화 trigger로 구성한다. `memory_items`는 character namespace, stable UUID, optional source session, content, 0~100 importance, created/updated/expiry를 가진다. migration은 forward-only이며 더 높은 schema version은 recoverable하지 않은 structured 오류로 거부한다.
+
+Presentation은 `ModelRuntimeSettings`를 통해 context window와 temperature를 명시적으로 바꾸고, `ContextWindowAdvisor`가 model limit·character instruction estimate·memory reservation·maximum output 및 가능한 hardware token cap으로 slider 범위와 권장값을 계산한다. 현재 profile의 8 Ki default와 probe UI의 128 Ki experimental upper bound는 M4 iPad telemetry 없는 안전/실험 경계이며, 큰 값은 GGUF metadata와 device pressure/thermal gate를 통과한 경우에만 유지한다.
 
 ### 12.2 Agent와 Tool
 
-`ModelEvent.ToolCall`은 실행 요청 데이터일 뿐 권한이 아니다. Application의 `IToolCatalog`, `IToolExecutor`, `IToolAuthorizationPolicy`가 schema 제공, 실행, 사용자 승인/권한을 각각 담당한다. Agent loop는 Application use case로 추가하며 Character Runtime이나 provider adapter 안에 숨기지 않는다.
+`ModelEvent.ToolCall`은 typed call ID/name/JSON argument를 가진 실행 요청 데이터일 뿐 권한이 아니다. `ToolRegistry`, `ITool`, `IToolAuthorization`, `IToolApproval`가 schema 제공, 실행, 사용자 승인/권한을 각각 담당한다. `AgentRuntime`은 `CharacterChatService`가 선택적으로 호출하는 bounded Application use case이며 provider adapter 안에 숨기지 않는다.
 
 tool은 최소 capability만 받고 timeout/cancellation/audit result를 가진다. filesystem, network, 개인정보 접근 tool은 명시적 사용자 승인 없이는 실행하지 않는다. local/remote model 어느 쪽도 authorization policy를 우회할 수 없다.
 
 ### 12.3 OpenAI-compatible provider
 
-원격 adapter는 `IModelAdapter/IModelSession`을 구현하고 자체 HTTP DTO를 내부에서 provider-neutral request/event로 변환한다. Character, Conversation, Agent 코드는 수정하지 않는다. API key는 repository, character bundle, `ModelProfile`에 두지 않고 플랫폼 secure storage/config injection으로 제공한다.
+원격 adapter는 `IModelAdapter/IModelSession`을 구현하고 자체 HTTP DTO를 내부에서 provider-neutral request/event로 변환한다. API key는 repository, character bundle, `ModelProfile`에 두지 않고 플랫폼 secure storage/config injection으로 제공한다. 현재 OpenAI-compatible projection은 Tool role과 canonical memory section을 전송 대상에서 제외한다.
 
 원격 전송은 명시적 opt-in이며 전송 직전에 대상 provider와 포함 데이터 범위를 UI에 표시할 수 있어야 한다. local-only session은 HTTP adapter를 생성하지 않는다. retry는 중복 assistant turn이나 tool 실행을 만들지 않도록 idempotency/correlation 정책을 가져야 한다.
 
@@ -507,7 +518,7 @@ architecture guard test는 `com.haruchat.runtime`에서 `UnityEngine`, P/Invoke,
 ## 15. 자체 검토 12문항
 
 1. **Qwen을 다른 GGUF 모델로 바꿀 때 Character Runtime 수정이 필요한가?**
-   아니오. 호환성, template, stop/tool/reasoning convention은 `ModelProfile`과 runtime model path/checksum에서 바뀐다. 데이터로 표현할 수 없는 protocol 차이가 검증될 때만 specialized adapter를 추가한다.
+   아니오. 호환성, template, stop/tool/reasoning convention은 `ModelProfile`과 runtime model path/checksum에서 바뀐다. Profile의 chat template은 `{role}`·`{content}` 치환과 assistant prefix를 data로 선언하므로 Qwen, Gemma처럼 turn token이 다른 text model도 같은 adapter를 쓴다. 데이터로 표현할 수 없는 protocol 차이가 검증될 때만 specialized adapter를 추가한다.
 
 2. **llama.cpp를 다른 inference backend로 바꿀 때 상위 로직 수정 범위는 어디까지인가?**
    새 `ILocalModelBackend` 구현과 composition 등록으로 제한한다. backend capability가 기존 port로 표현되지 않을 때만 port와 contract test를 확장하며 Character/Conversation은 수정하지 않는다.

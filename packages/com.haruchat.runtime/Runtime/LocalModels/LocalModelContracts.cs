@@ -7,6 +7,17 @@ using System.Threading.Tasks;
 
 namespace HaruChat.Runtime.LocalModels
 {
+    public sealed class LocalChatMessage
+    {
+        public LocalChatMessage(string role, string content) { Role = role ?? throw new ArgumentNullException(nameof(role)); Content = content ?? throw new ArgumentNullException(nameof(content)); }
+        public string Role { get; } public string Content { get; }
+    }
+
+    /// <summary>Optional capability for applying a loaded GGUF's embedded chat template.</summary>
+    public interface ILocalModelChatTemplateBackend
+    {
+        Task<LocalBackendResult<string>> ApplyChatTemplateAsync(LocalModelHandle model, IReadOnlyList<LocalChatMessage> messages, CancellationToken cancellationToken);
+    }
     /// <summary>
     /// Provider-neutral managed boundary for a locally hosted model backend.
     /// Implementations are introduced in Phase 4; this contract deliberately contains no Unity or P/Invoke types.
@@ -71,6 +82,11 @@ namespace HaruChat.Runtime.LocalModels
 
         Task<LocalBackendResult<LocalGenerationMetrics>> GetGenerationMetricsAsync(
             LocalGenerationHandle generation,
+            CancellationToken cancellationToken);
+
+        Task<LocalBackendResult<int>> CountTokensAsync(
+            LocalModelHandle model,
+            string utf8Text,
             CancellationToken cancellationToken);
 
     }
@@ -143,16 +159,35 @@ namespace HaruChat.Runtime.LocalModels
         public string ModelPath { get; }
     }
 
+    public enum LocalKvCacheType { Default = 0, Float16 = 1, Quantized8 = 2 }
+    public enum LocalFlashAttentionMode { Auto = 0, Disabled = 1, Enabled = 2 }
+
     public sealed class LocalContextOptions
     {
-        public LocalContextOptions(int contextWindowTokens, int batchSize)
+        /// <summary>Uses Q8_0 KV and a bounded physical batch by default to make 32K+ contexts practical on unified-memory devices.</summary>
+        public LocalContextOptions(int contextWindowTokens, int batchSize, int microBatchSize = 0,
+            LocalKvCacheType keyCacheType = LocalKvCacheType.Quantized8,
+            LocalKvCacheType valueCacheType = LocalKvCacheType.Quantized8,
+            LocalFlashAttentionMode flashAttention = LocalFlashAttentionMode.Enabled,
+            bool offloadKqv = true)
         {
+            if (contextWindowTokens <= 0 || batchSize <= 0 || microBatchSize < 0 || microBatchSize > batchSize) throw new ArgumentOutOfRangeException(nameof(contextWindowTokens));
             ContextWindowTokens = contextWindowTokens;
             BatchSize = batchSize;
+            MicroBatchSize = microBatchSize == 0 ? Math.Min(batchSize, 128) : microBatchSize;
+            KeyCacheType = keyCacheType;
+            ValueCacheType = valueCacheType;
+            FlashAttention = flashAttention;
+            OffloadKqv = offloadKqv;
         }
 
         public int ContextWindowTokens { get; }
         public int BatchSize { get; }
+        public int MicroBatchSize { get; }
+        public LocalKvCacheType KeyCacheType { get; }
+        public LocalKvCacheType ValueCacheType { get; }
+        public LocalFlashAttentionMode FlashAttention { get; }
+        public bool OffloadKqv { get; }
     }
 
     public sealed class LocalGenerationOptions

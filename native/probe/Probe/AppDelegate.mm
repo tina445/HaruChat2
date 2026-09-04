@@ -58,7 +58,7 @@ static NSString *StatusText(hc_llm_status status) {
     hc_llm_status status = hc_llm_model_load(self.runtime, path.fileSystemRepresentation, &modelOptions, &model);
     if (status != HC_LLM_STATUS_OK) { [self emitStatus:[NSString stringWithFormat:@"Load failed: %@", StatusText(status)]]; return; }
     self.model = model;
-    hc_llm_context_options contextOptions = {0}; contextOptions.struct_size = sizeof(contextOptions); contextOptions.abi_version = HC_LLM_ABI_VERSION; contextOptions.context_size = 2048;
+    hc_llm_context_options contextOptions = {0}; contextOptions.struct_size = sizeof(contextOptions); contextOptions.abi_version = HC_LLM_ABI_VERSION; contextOptions.context_size = 8192;
     hc_llm_context *context = nullptr;
     status = hc_llm_context_create(self.model, &contextOptions, &context);
     if (status != HC_LLM_STATUS_OK) { hc_llm_model_unload(self.model); self.model = nullptr; [self emitStatus:[NSString stringWithFormat:@"Context failed: %@", StatusText(status)]]; return; }
@@ -73,7 +73,7 @@ static NSString *StatusText(hc_llm_status status) {
     if (self.context == nullptr) { [self emitStatus:@"Load a GGUF model first"]; return; }
     NSData *input = [prompt dataUsingEncoding:NSUTF8StringEncoding];
     hc_llm_generation_options options = {0}; options.struct_size = sizeof(options); options.abi_version = HC_LLM_ABI_VERSION; options.temperature = 0.7f; options.top_p = 0.9f; options.top_k = 40;
-    options.prompt_utf8 = (const uint8_t *)input.bytes; options.prompt_bytes = (uint32_t)input.length; options.max_tokens = 128;
+    options.prompt_utf8 = (const uint8_t *)input.bytes; options.prompt_bytes = (uint32_t)input.length; options.max_tokens = 2048;
     hc_llm_job *job = nullptr;
     hc_llm_status status = hc_llm_job_start(self.context, &options, &job);
     if (status != HC_LLM_STATUS_OK) { [self emitStatus:[NSString stringWithFormat:@"Generate failed: %@", StatusText(status)]]; return; }

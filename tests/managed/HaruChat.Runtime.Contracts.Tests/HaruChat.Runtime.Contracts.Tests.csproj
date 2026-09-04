@@ -6,9 +6,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Adapter projects share the runtime's custom obj root during graph discovery. -->
+    <RestoreBuildInParallel>false</RestoreBuildInParallel>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The test executable directly consumes runtime contracts as well as adapter
+         implementations; do not rely on transitive project-reference resolution. -->
     <ProjectReference Include="../../../packages/com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" />
     <ProjectReference Include="../../../packages/com.haruchat.llamacpp/HaruChat.LlamaCpp.csproj" />
+    <ProjectReference Include="../../../packages/com.haruchat.memory.sqlite/HaruChat.Memory.Sqlite.csproj" />
   </ItemGroup>
 </Project>

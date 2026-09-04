@@ -1,14 +1,22 @@
 {
   "id": "qwen35",
   "schemaVersion": 1,
-  "namedTemplate": "Qwen3.5",
-  "contextWindowTokens": 4096,
-  "maximumOutputTokens": 256,
+  "chatTemplate": {
+    "messageTemplate": "<|im_start|>{role}\n{content}<|im_end|>\n",
+    "assistantTemplate": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "roles": [
+      { "role": "system", "name": "system" },
+      { "role": "user", "name": "user" },
+      { "role": "assistant", "name": "assistant" },
+      { "role": "tool", "name": "tool" }
+    ]
+  },
+  "contextWindowTokens": 8192,
+  "maximumOutputTokens": 2048,
   "temperature": 0.7,
   "topK": 40,
   "topP": 0.9,
   "seed": null,
-  "disableThinking": true,
   "architectureContains": ["qwen"],
   "stopSequences": []
 }

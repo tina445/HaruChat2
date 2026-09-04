@@ -16,5 +16,8 @@ ADR은 구현 전후에 유지해야 할 중요한 기술 결정을 기록한다
 | [ADR-0010](0010-use-xcross-only-as-phase-3-device-probe-host.md) | xcross를 Phase 3 Flutter device probe host로만 사용 | Accepted | 2026-08-29 |
 | [ADR-0011](0011-use-unity-build-automation-for-phase-6-app-tests.md) | Phase 6 iOS 앱 테스트 빌드에 Unity Build Automation 사용 | Accepted | 2026-09-01 |
 | [ADR-0012](0012-use-flutter-native-probe-as-phase-6-ui-test-host.md) | Flutter native probe를 Phase 6 UI test host로 사용 | Accepted | 2026-09-01 |
+| [ADR-0013](0013-use-opt-in-sqlite-memory-schema.md) | opt-in SQLite v1 memory schema 사용 | Accepted | 2026-09-02 |
+| [ADR-0014](0014-use-bounded-agent-and-private-remote-adapter.md) | bounded Agent/Tool 및 private OpenAI-compatible adapter 사용 | Accepted | 2026-09-02 |
+| [ADR-0015](0015-use-local-structured-conversation-compression.md) | local structured conversation compression 사용 | Accepted | 2026-09-02 |
 
 각 ADR은 `Context`, `Decision`, `Alternatives`, `Consequences`, `Status`, `Date`를 포함한다.

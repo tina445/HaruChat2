@@ -110,6 +110,14 @@ if(LLMCORE_BUILD_TESTS)
   endif()
   add_test(NAME llmcore.model_smoke COMMAND llmcore_model_smoke)
   set_tests_properties(llmcore.model_smoke PROPERTIES LABELS "model-smoke" SKIP_RETURN_CODE 77)
+  if(LLMCORE_ENABLE_LLAMA_CPP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/models/ggml-vocab-gemma-4.gguf")
+    add_executable(llmcore_template_smoke ../tests/native/template_smoke.cpp)
+    target_link_libraries(llmcore_template_smoke PRIVATE llmcore)
+    target_include_directories(llmcore_template_smoke PRIVATE llmcore/include)
+    add_test(NAME llmcore.embedded_template_smoke
+      COMMAND llmcore_template_smoke "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/models/ggml-vocab-gemma-4.gguf")
+    set_tests_properties(llmcore.embedded_template_smoke PROPERTIES LABELS "embedded-template")
+  endif()
   if(LLMCORE_ENABLE_SANITIZERS AND LLMCORE_DISABLE_LEAK_SANITIZER)
     # Some sandboxed test runners use ptrace and cannot run LeakSanitizer.
     # ASan/UBSan remain enabled; normal host and CI builds keep LSan enabled.

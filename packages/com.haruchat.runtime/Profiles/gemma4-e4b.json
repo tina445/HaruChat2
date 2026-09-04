@@ -1,0 +1,24 @@
+{
+  "id": "gemma4-e4b-text",
+  "schemaVersion": 1,
+  "chatTemplate": {
+    "messageTemplate": "<|turn>{role}\n{content}<turn|>\n",
+    "assistantTemplate": "<|turn>model\n",
+    "roles": [
+      { "role": "system", "name": "system" },
+      { "role": "user", "name": "user" },
+      { "role": "assistant", "name": "model" }
+    ]
+  },
+  "contextWindowTokens": 8192,
+  "maximumOutputTokens": 2048,
+  "temperature": 0.7,
+  "topK": 40,
+  "topP": 0.95,
+  "stopSequences": ["<turn|>", "<|tool_response>"],
+  "streaming": true,
+  "cancellation": true,
+  "tools": false,
+  "reasoning": false,
+  "architectureContains": ["gemma4"]
+}

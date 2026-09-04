@@ -76,7 +76,7 @@ namespace HaruChat.Unity.Tests
             var character = Path.Combine(root, "bundled", id); Directory.CreateDirectory(character);
             File.WriteAllText(Path.Combine(character, "manifest.json"), "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"displayName\":\"Haru\"}");
             File.WriteAllText(Path.Combine(character, "system.md"), "Be Haru.");
-            File.WriteAllText(Path.Combine(root, "qwen35.json"), "{\"id\":\"qwen35\",\"schemaVersion\":1,\"namedTemplate\":\"Qwen3.5\",\"contextWindowTokens\":128,\"maximumOutputTokens\":8,\"temperature\":0.7,\"topK\":40,\"topP\":0.9}");
+            File.WriteAllText(Path.Combine(root, "qwen35.json"), "{\"id\":\"qwen35\",\"schemaVersion\":1,\"chatTemplate\":{\"messageTemplate\":\"<|im_start|>{role}\\n{content}<|im_end|>\\n\",\"assistantTemplate\":\"<|im_start|>assistant\\n\"},\"contextWindowTokens\":128,\"maximumOutputTokens\":8,\"temperature\":0.7,\"topK\":40,\"topP\":0.9}");
         }
     }
 }

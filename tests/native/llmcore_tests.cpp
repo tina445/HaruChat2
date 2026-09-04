@@ -88,7 +88,7 @@ int main() {
   assert(std::strcmp(runtime_metadata.backend_name, "bootstrap-mock") == 0);
 
   hc_llm_model *model = nullptr;
-  assert(hc_llm_model_load(runtime, "/does/not/exist.gguf", nullptr, &model) == HC_LLM_STATUS_IO_ERROR);
+  assert(hc_llm_model_load(runtime, "/does/not/exist.gguf", nullptr, &model) == HC_LLM_STATUS_NOT_FOUND);
   const std::string fixture = make_gguf_fixture();
   hc_llm_model_load_options reserved_load_options{};
   reserved_load_options.struct_size = sizeof(reserved_load_options);
@@ -108,6 +108,30 @@ int main() {
   model_metadata.abi_version = HC_LLM_ABI_VERSION;
   assert(hc_llm_model_get_metadata(model, &model_metadata) == HC_LLM_STATUS_OK);
   assert(std::strlen(model_metadata.description) > 0);
+  hc_llm_model_metadata legacy_model_metadata{};
+  legacy_model_metadata.struct_size = HC_LLM_MODEL_METADATA_V1_SIZE;
+  legacy_model_metadata.abi_version = HC_LLM_ABI_VERSION;
+  std::memset(legacy_model_metadata.architecture, 0x5a, sizeof(legacy_model_metadata.architecture));
+  assert(hc_llm_model_get_metadata(model, &legacy_model_metadata) == HC_LLM_STATUS_OK);
+  assert(legacy_model_metadata.architecture[0] == static_cast<char>(0x5a));
+
+  // Bootstrap token counting deterministically follows Unicode scalar values;
+  // real backends use the loaded model vocabulary through the same ABI.
+  const uint8_t mixed_text[] = u8"A가🙂";
+  uint32_t token_count = 0;
+  assert(hc_llm_model_count_tokens(model, mixed_text, sizeof(mixed_text) - 1, &token_count) == HC_LLM_STATUS_OK);
+  assert(token_count == 3);
+  assert(hc_llm_model_count_tokens(model, nullptr, 0, &token_count) == HC_LLM_STATUS_OK);
+  assert(token_count == 0);
+  const hc_llm_chat_message chat_message{ "user", mixed_text, static_cast<uint32_t>(sizeof(mixed_text) - 1) };
+  uint32_t template_bytes = 0;
+  assert(hc_llm_model_apply_chat_template(model, &chat_message, 1, 1, nullptr, 0, &template_bytes) == HC_LLM_STATUS_UNSUPPORTED);
+  assert(hc_llm_model_count_tokens(model, mixed_text, sizeof(mixed_text) - 1, nullptr) == HC_LLM_STATUS_INVALID_ARGUMENT);
+  const uint8_t invalid_token_text[] = {0xc0U, 0x80U};
+  assert(hc_llm_model_count_tokens(model, invalid_token_text, sizeof(invalid_token_text), &token_count) ==
+         HC_LLM_STATUS_INVALID_ARGUMENT);
+  assert(hc_llm_model_count_tokens(nullptr, mixed_text, sizeof(mixed_text) - 1, &token_count) ==
+         HC_LLM_STATUS_INVALID_HANDLE);
 
   hc_llm_context *context = nullptr;
   hc_llm_context_options legacy_context_options{};
@@ -120,7 +144,16 @@ int main() {
   context_options.struct_size = sizeof(context_options);
   context_options.abi_version = HC_LLM_ABI_VERSION;
   context_options.batch_size = 16;
+  context_options.ubatch_size = 8;
+  context_options.kv_cache_type_k = HC_LLM_KV_CACHE_TYPE_Q8_0;
+  context_options.kv_cache_type_v = HC_LLM_KV_CACHE_TYPE_Q8_0;
+  context_options.flash_attention = HC_LLM_FLASH_ATTENTION_AUTO;
+  context_options.offload_kqv = 1;
   assert(hc_llm_context_create(model, &context_options, &context) == HC_LLM_STATUS_OK);
+  hc_llm_context_options invalid_ubatch_options = context_options;
+  invalid_ubatch_options.ubatch_size = 17;
+  hc_llm_context *invalid_ubatch_context = nullptr;
+  assert(hc_llm_context_create(model, &invalid_ubatch_options, &invalid_ubatch_context) == HC_LLM_STATUS_INVALID_ARGUMENT);
   hc_llm_context_options reserved_context_options = context_options;
   reserved_context_options.reserved1 = 1;
   hc_llm_context *reserved_context = nullptr;
@@ -208,6 +241,8 @@ int main() {
   assert(hc_llm_context_destroy(context) == HC_LLM_STATUS_OK);
   assert(hc_llm_context_reset(context) == HC_LLM_STATUS_INVALID_HANDLE);
   assert(hc_llm_model_unload(model) == HC_LLM_STATUS_OK);
+  assert(hc_llm_model_count_tokens(model, mixed_text, sizeof(mixed_text) - 1, &token_count) ==
+         HC_LLM_STATUS_INVALID_HANDLE);
 
   hc_llm_model *reloaded = nullptr;
   assert(hc_llm_model_load(runtime, fixture.c_str(), nullptr, &reloaded) == HC_LLM_STATUS_OK);

@@ -2,10 +2,39 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "Microsoft.Data.Sqlite.Core": {
+        "type": "Transitive",
+        "resolved": "10.0.0",
+        "contentHash": "wPKG/Ym6tSMCo06UOZXzVfeFGzawnOZrTba/R3PfK+RhNuNELZ9I7nFns4WGTtv2kKlrlmmErgJ+kgTXHaNdHg==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.11"
+        }
+      },
+      "SQLitePCLRaw.core": {
+        "type": "Transitive",
+        "resolved": "2.1.11",
+        "contentHash": "PK0GLFkfhZzLQeR3PJf71FmhtHox+U3vcY6ZtswoMjrefkB9k6ErNJEnwXqc5KgXDSjige2XXrezqS39gkpQKA=="
+      },
+      "SQLitePCLRaw.provider.dynamic_cdecl": {
+        "type": "Transitive",
+        "resolved": "2.1.11",
+        "contentHash": "mlKl5/8Vz4EpkZY2WshEVMm3OuTaNq1I9LtP3X/ZecmfoR4+A78FKty620z8oxhUBkIWUs8f3bUPsgA15rptdg==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.11"
+        }
+      },
       "haruchat.llamacpp": {
         "type": "Project",
         "dependencies": {
           "HaruChat.Runtime.Contracts": "[1.0.0, )"
+        }
+      },
+      "haruchat.memory.sqlite": {
+        "type": "Project",
+        "dependencies": {
+          "HaruChat.Runtime.Contracts": "[1.0.0, )",
+          "Microsoft.Data.Sqlite.Core": "[10.0.0, )",
+          "SQLitePCLRaw.provider.dynamic_cdecl": "[2.1.11, )"
         }
       },
       "haruchat.runtime.contracts": {

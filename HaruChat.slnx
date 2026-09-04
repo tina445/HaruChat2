@@ -1,6 +1,8 @@
 <Solution>
   <Project Path="packages/com.haruchat.runtime/HaruChat.Runtime.Contracts.csproj" />
   <Project Path="packages/com.haruchat.llamacpp/HaruChat.LlamaCpp.csproj" />
+  <Project Path="packages/com.haruchat.memory.sqlite/HaruChat.Memory.Sqlite.csproj" />
+  <Project Path="packages/com.haruchat.openai/HaruChat.OpenAI.csproj" />
   <Project Path="tools/headless/HaruChat.Headless.csproj" />
   <Project Path="tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Runtime.Contracts.Tests.csproj" />
 </Solution>

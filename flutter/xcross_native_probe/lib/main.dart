@@ -1,11 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hc_llm_flutter/hc_llm_flutter.dart';
 
 import 'character_bundle_store.dart';
 
-void main() => runApp(const HaruChatNativeProbeApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+      overlays: const []));
+  runApp(const HaruChatNativeProbeApp());
+}
 
 /// Flutter test host mirroring the Phase 6 Unity screen. Native lifecycle
 /// calls remain real; this app does not replace the Unity/M4 MVP gate.
@@ -16,6 +22,9 @@ class HaruChatNativeProbeApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
         title: 'HaruChat P6 UI Harness',
         debugShowCheckedModeBanner: false,
+        builder: (context, child) => _KeyboardDismissOnTap(
+          child: child ?? const SizedBox.shrink(),
+        ),
         theme: ThemeData(
           useMaterial3: true,
           brightness: Brightness.dark,
@@ -30,10 +39,62 @@ class HaruChatNativeProbeApp extends StatelessWidget {
       );
 }
 
+/// Clears text focus only when a tap lands outside the active input. Using a
+/// [Listener] keeps buttons and scrollables responsive while covering dialogs,
+/// drawers, and the primary chat surface with the same iOS keyboard behavior.
+class _KeyboardDismissOnTap extends StatelessWidget {
+  const _KeyboardDismissOnTap({required this.child});
+
+  final Widget child;
+
+  void _dismissIfOutsideFocusedInput(PointerDownEvent event) {
+    final focus = FocusManager.instance.primaryFocus;
+    final renderObject = focus?.context?.findRenderObject();
+    if (renderObject is RenderBox && renderObject.hasSize) {
+      final focusedBounds =
+          renderObject.localToGlobal(Offset.zero) & renderObject.size;
+      if (focusedBounds.contains(event.position)) return;
+    }
+    focus?.unfocus();
+  }
+
+  @override
+  Widget build(BuildContext context) => Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _dismissIfOutsideFocusedInput,
+        child: child,
+      );
+}
+
 class _ChatMessage {
   _ChatMessage(this.role, this.text);
   final String role;
   String text;
+}
+
+class _MemoryNote {
+  const _MemoryNote({required this.text, required this.importance});
+  final String text;
+  final int importance;
+}
+
+class _MemoryAtelierResult {
+  const _MemoryAtelierResult({
+    required this.enabled,
+    required this.retentionDays,
+    required this.maxRetrieved,
+    required this.contextTokenBudget,
+    required this.contextWindowTokens,
+    required this.temperature,
+    required this.notes,
+  });
+  final bool enabled;
+  final int? retentionDays;
+  final int maxRetrieved;
+  final int contextTokenBudget;
+  final int contextWindowTokens;
+  final double temperature;
+  final List<_MemoryNote> notes;
 }
 
 class NativeProbePage extends StatefulWidget {
@@ -43,7 +104,8 @@ class NativeProbePage extends StatefulWidget {
 }
 
 class _NativeProbePageState extends State<NativeProbePage> {
-  static const _compactWidth = 800.0;
+  static const _railMinimumWidth = 960.0;
+  static const _compactHeight = 680.0;
   final _modelPath = TextEditingController();
   final _composer = TextEditingController();
   final _log = <String>[];
@@ -58,6 +120,13 @@ class _NativeProbePageState extends State<NativeProbePage> {
   String _status = '모델을 불러오지 않았습니다.';
   bool _generating = false;
   bool _modelLoaded = false;
+  bool _memoryEnabled = false;
+  int? _memoryRetentionDays;
+  int _maxRetrievedMemories = 3;
+  int _memoryContextTokenBudget = 256;
+  int _contextWindowTokens = 8192;
+  double _temperature = 0.7;
+  List<_MemoryNote> _memoryNotes = const [];
 
   @override
   void initState() {
@@ -105,7 +174,8 @@ class _NativeProbePageState extends State<NativeProbePage> {
       return;
     }
     _setStatus('모델을 준비하고 있습니다…');
-    final status = await NativeProbe.load(_modelPath.text);
+    final status = await NativeProbe.load(_modelPath.text,
+        contextWindowTokens: _contextWindowTokens);
     if (mounted) {
       setState(() {
         _status = status;
@@ -126,7 +196,8 @@ class _NativeProbePageState extends State<NativeProbePage> {
       _generating = true;
       _status = '응답을 스트리밍하고 있습니다…';
     });
-    _setStatus(await NativeProbe.generate(_probePrompt(input)));
+    _setStatus(await NativeProbe.generate(_probePrompt(input),
+        maximumOutputTokens: 2048));
   }
 
   String _probePrompt(String user) {
@@ -166,11 +237,26 @@ class _NativeProbePageState extends State<NativeProbePage> {
     }
   }
 
-  Future<void> _refreshCharacters() async {
+  Future<void> _refreshCharacters({String? selectId}) async {
     try {
       _characterStore ??= await CharacterBundleStore.openDefault();
       final characters = await _characterStore!.list();
-      if (mounted) setState(() => _characters = characters);
+      final selectedId = selectId ?? _selectedCharacter?.id;
+      CharacterBundleSummary? canonicalSelection;
+      if (selectedId != null) {
+        for (final character in characters) {
+          if (character.id == selectedId) {
+            canonicalSelection = character;
+            break;
+          }
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _characters = characters;
+          _selectedCharacter = canonicalSelection;
+        });
+      }
     } catch (error) {
       _setStatus('Character storage unavailable: $error');
     }
@@ -185,8 +271,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
     try {
       _characterStore ??= await CharacterBundleStore.openDefault();
       final created = await _characterStore!.create(draft);
-      await _refreshCharacters();
-      if (mounted) setState(() => _selectedCharacter = created);
+      await _refreshCharacters(selectId: created.id);
     } catch (error) {
       _setStatus('Character creation failed: $error');
     }
@@ -203,17 +288,47 @@ class _NativeProbePageState extends State<NativeProbePage> {
     try {
       _characterStore ??= await CharacterBundleStore.openDefault();
       final updated = await _characterStore!.update(existing, draft);
-      await _refreshCharacters();
-      if (mounted) setState(() => _selectedCharacter = updated);
+      await _refreshCharacters(selectId: updated.id);
     } catch (error) {
       _setStatus('Character update failed: $error');
     }
   }
 
+  Future<void> _openMemoryAtelier() async {
+    final result = await showDialog<_MemoryAtelierResult>(
+      context: context,
+      builder: (_) => _MemoryAtelierDialog(
+        enabled: _memoryEnabled,
+        retentionDays: _memoryRetentionDays,
+        maxRetrieved: _maxRetrievedMemories,
+        contextTokenBudget: _memoryContextTokenBudget,
+        contextWindowTokens: _contextWindowTokens,
+        temperature: _temperature,
+        modelPath: _modelPath.text,
+        modelLoaded: _modelLoaded,
+        characterInstructionTokens:
+            (_selectedCharacter?.promptContext.length ?? 0) ~/ 4,
+        notes: _memoryNotes,
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _memoryEnabled = result.enabled;
+      _memoryRetentionDays = result.retentionDays;
+      _maxRetrievedMemories = result.maxRetrieved;
+      _memoryContextTokenBudget = result.contextTokenBudget;
+      _contextWindowTokens = result.contextWindowTokens;
+      _temperature = result.temperature;
+      _memoryNotes = result.notes;
+    });
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
-          final compact = constraints.maxWidth < _compactWidth;
+          final compact = constraints.maxWidth < _railMinimumWidth ||
+              constraints.maxHeight < _compactHeight;
+          final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
           final rail = _ControlRail(
             modelPath: _modelPath,
             characters: _characters,
@@ -230,9 +345,12 @@ class _NativeProbePageState extends State<NativeProbePage> {
             onUnload: _unload,
             onNewConversation: _newConversation,
             onCancel: _cancel,
+            memoryEnabled: _memoryEnabled,
+            memoryNoteCount: _memoryNotes.length,
+            onOpenMemoryAtelier: _openMemoryAtelier,
           );
           return Scaffold(
-            resizeToAvoidBottomInset: false,
+            resizeToAvoidBottomInset: true,
             appBar: AppBar(title: const _Masthead()),
             drawer: compact
                 ? Drawer(
@@ -248,6 +366,14 @@ class _NativeProbePageState extends State<NativeProbePage> {
                       status: _status,
                       loaded: _modelLoaded,
                       generating: _generating,
+                      keyboardVisible: keyboardVisible,
+                      memoryEnabled: _memoryEnabled,
+                      memoryNoteCount: _memoryNotes.length,
+                      memoryBudget: _memoryContextTokenBudget,
+                      contextWindowTokens: _contextWindowTokens,
+                      characterInstructionTokens:
+                          (_selectedCharacter?.promptContext.length ?? 0) ~/ 4,
+                      onOpenMemoryAtelier: _openMemoryAtelier,
                       onSend: _send)),
             ]),
           );
@@ -298,11 +424,16 @@ class _ControlRail extends StatelessWidget {
       required this.onLoad,
       required this.onUnload,
       required this.onNewConversation,
-      required this.onCancel});
+      required this.onCancel,
+      required this.memoryEnabled,
+      required this.memoryNoteCount,
+      required this.onOpenMemoryAtelier});
   final TextEditingController modelPath;
   final List<CharacterBundleSummary> characters;
   final CharacterBundleSummary? selected;
   final bool loaded, generating;
+  final bool memoryEnabled;
+  final int memoryNoteCount;
   final ValueChanged<CharacterBundleSummary?> onCharacterChanged;
   final Future<void> Function() onAddCharacter,
       onEditCharacter,
@@ -311,7 +442,8 @@ class _ControlRail extends StatelessWidget {
       onLoad,
       onUnload,
       onNewConversation,
-      onCancel;
+      onCancel,
+      onOpenMemoryAtelier;
   @override
   Widget build(BuildContext context) =>
       ListView(padding: const EdgeInsets.all(16), children: [
@@ -341,6 +473,12 @@ class _ControlRail extends StatelessWidget {
             onTap: selected == null ? null : onEditCharacter),
         _RailButton(
             icon: Icons.refresh, label: '새로고침', onTap: onRefreshCharacters),
+        _RailButton(
+            icon: Icons.auto_stories_outlined,
+            label: memoryEnabled
+                ? '기억 노트 · 설정 ($memoryNoteCount)'
+                : '기억 노트 · 설정 (꺼짐)',
+            onTap: onOpenMemoryAtelier),
         const Divider(height: 30),
         TextField(
             controller: modelPath,
@@ -413,45 +551,78 @@ class _Conversation extends StatelessWidget {
       required this.status,
       required this.loaded,
       required this.generating,
+      required this.keyboardVisible,
+      required this.memoryEnabled,
+      required this.memoryNoteCount,
+      required this.memoryBudget,
+      required this.contextWindowTokens,
+      required this.characterInstructionTokens,
+      required this.onOpenMemoryAtelier,
       required this.onSend});
   final List<_ChatMessage> messages;
   final TextEditingController composer;
   final String status;
-  final bool loaded, generating;
+  final bool loaded, generating, keyboardVisible, memoryEnabled;
+  final int memoryNoteCount,
+      memoryBudget,
+      contextWindowTokens,
+      characterInstructionTokens;
+  final Future<void> Function() onOpenMemoryAtelier;
   final Future<void> Function() onSend;
+  void _dismissKeyboard() => FocusManager.instance.primaryFocus?.unfocus();
   @override
-  Widget build(BuildContext context) => Column(children: [
-        Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-                color: const Color(0xff192726),
-                borderRadius: BorderRadius.circular(12)),
-            child: Row(children: [
-              Icon(Icons.circle,
-                  size: 10,
-                  color: loaded
-                      ? const Color(0xff91e7cf)
-                      : const Color(0xfff7c77a)),
-              const SizedBox(width: 9),
-              Expanded(child: Text(status))
-            ])),
-        Expanded(
-            child: ListView.builder(
-                padding: const EdgeInsets.all(20),
-                itemCount: messages.length,
-                itemBuilder: (_, index) =>
-                    _MessageBubble(message: messages[index]))),
-        AnimatedPadding(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            padding: EdgeInsets.only(
-                bottom: MediaQuery.viewInsetsOf(context).bottom),
-            child: SafeArea(
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          // A landscape iPhone with its keyboard open can leave less than a
+          // composer height after the app bar. Prioritize composing over the
+          // secondary status panels rather than allowing a bottom overflow.
+          final dense = constraints.maxHeight < 360;
+          return Column(children: [
+            if (!dense)
+              Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                      color: const Color(0xff192726),
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Row(children: [
+                    Icon(Icons.circle,
+                        size: 10,
+                        color: loaded
+                            ? const Color(0xff91e7cf)
+                            : const Color(0xfff7c77a)),
+                    const SizedBox(width: 9),
+                    Expanded(
+                        child: Text(status,
+                            maxLines: 2, overflow: TextOverflow.ellipsis))
+                  ])),
+            if (!dense)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: _MemoryPulse(
+                  enabled: memoryEnabled,
+                  noteCount: memoryNoteCount,
+                  memoryBudget: memoryBudget,
+                  contextWindowTokens: contextWindowTokens,
+                  characterInstructionTokens: characterInstructionTokens,
+                  onTap: onOpenMemoryAtelier,
+                ),
+              ),
+            Expanded(
+                child: ListView.builder(
+                    padding: EdgeInsets.all(dense ? 12 : 20),
+                    itemCount: messages.length,
+                    itemBuilder: (_, index) =>
+                        _MessageBubble(message: messages[index]))),
+            // Scaffold resizes the body above the software keyboard. Adding
+            // the inset again here would move the composer up twice.
+            SafeArea(
                 top: false,
                 child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                    padding: EdgeInsets.fromLTRB(
+                        20, dense ? 4 : 4, 20, dense ? 8 : 16),
                     child: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
@@ -461,17 +632,125 @@ class _Conversation extends StatelessWidget {
                                   controller: composer,
                                   enabled: loaded && !generating,
                                   minLines: 1,
-                                  maxLines: 4,
+                                  maxLines: dense ? 2 : 4,
                                   decoration: const InputDecoration(
                                       hintText: '메시지를 입력하세요', filled: true))),
+                          if (keyboardVisible) ...[
+                            const SizedBox(width: 6),
+                            IconButton(
+                                key: const Key('dismiss-keyboard'),
+                                tooltip: '키보드 내리기',
+                                onPressed: _dismissKeyboard,
+                                icon: const Icon(Icons.keyboard_hide_outlined)),
+                          ],
                           const SizedBox(width: 10),
                           FilledButton.icon(
                               key: const Key('send'),
                               onPressed: loaded && !generating ? onSend : null,
                               icon: const Icon(Icons.arrow_upward),
                               label: const Text('전송'))
-                        ])))),
-      ]);
+                        ]))),
+          ]);
+        },
+      );
+}
+
+class _MemoryPulse extends StatelessWidget {
+  const _MemoryPulse({
+    required this.enabled,
+    required this.noteCount,
+    required this.memoryBudget,
+    required this.contextWindowTokens,
+    required this.characterInstructionTokens,
+    required this.onTap,
+  });
+  final bool enabled;
+  final int noteCount,
+      memoryBudget,
+      contextWindowTokens,
+      characterInstructionTokens;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const outputReserve = 8192;
+    final reserved = memoryBudget + characterInstructionTokens + outputReserve;
+    final safeHeadroom =
+        (contextWindowTokens - reserved).clamp(0, contextWindowTokens);
+    final pressure =
+        contextWindowTokens == 0 ? 0.0 : reserved / contextWindowTokens;
+    final warning = pressure > .62;
+    final accent = enabled
+        ? (warning ? const Color(0xfff7c77a) : const Color(0xff91e7cf))
+        : const Color(0xff8a9a98);
+    return Semantics(
+      button: true,
+      label: '기억 노트 및 context 설정 열기',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const Key('memory-pulse'),
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Ink(
+            padding: const EdgeInsets.fromLTRB(14, 11, 12, 12),
+            decoration: BoxDecoration(
+              color: const Color(0xff14211f),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: accent.withValues(alpha: .42)),
+            ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final tight = constraints.maxWidth < 430;
+                return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Icon(Icons.auto_stories_outlined,
+                            size: 18, color: accent),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            enabled
+                                ? '기억 $noteCount개 · $memoryBudget t reserve'
+                                : '장기 기억 꺼짐 · 노트 $noteCount개',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700, color: accent),
+                          ),
+                        ),
+                        const Icon(Icons.tune,
+                            size: 18, color: Color(0xffb5c9c6)),
+                      ]),
+                      const SizedBox(height: 9),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(99),
+                        child: LinearProgressIndicator(
+                          minHeight: 5,
+                          value: pressure.clamp(0.0, 1.0),
+                          backgroundColor: const Color(0xff283b38),
+                          valueColor: AlwaysStoppedAnimation<Color>(accent),
+                        ),
+                      ),
+                      const SizedBox(height: 7),
+                      Text(
+                        tight
+                            ? '여유 ${safeHeadroom}t / ${contextWindowTokens}t · 설정'
+                            : '지시문 ${characterInstructionTokens}t + 기억 ${memoryBudget}t + 출력 ${outputReserve}t · 대화 여유 ${safeHeadroom}t / ${contextWindowTokens}t',
+                        maxLines: tight ? 1 : 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, color: Color(0xffb5c9c6)),
+                      ),
+                    ]);
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -508,6 +787,359 @@ class _MessageBubble extends StatelessWidget {
               Text(message.text.isEmpty ? '…' : message.text)
             ])));
   }
+}
+
+/// UI-only P7 preview. Persistence remains disabled until the managed SQLite
+/// bridge owns these values; this harness deliberately never writes memories.
+class _MemoryAtelierDialog extends StatefulWidget {
+  const _MemoryAtelierDialog({
+    required this.enabled,
+    required this.retentionDays,
+    required this.maxRetrieved,
+    required this.contextTokenBudget,
+    required this.contextWindowTokens,
+    required this.temperature,
+    required this.modelPath,
+    required this.modelLoaded,
+    required this.characterInstructionTokens,
+    required this.notes,
+  });
+  final bool enabled;
+  final int? retentionDays;
+  final int maxRetrieved;
+  final int contextTokenBudget;
+  final int contextWindowTokens;
+  final double temperature;
+  final String modelPath;
+  final bool modelLoaded;
+  final int characterInstructionTokens;
+  final List<_MemoryNote> notes;
+
+  @override
+  State<_MemoryAtelierDialog> createState() => _MemoryAtelierDialogState();
+}
+
+class _MemoryAtelierDialogState extends State<_MemoryAtelierDialog> {
+  late bool _enabled;
+  late int? _retentionDays;
+  late int _maxRetrieved;
+  late int _contextTokenBudget;
+  late int _contextWindowTokens;
+  late double _temperature;
+  late List<_MemoryNote> _notes;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.enabled;
+    _retentionDays = widget.retentionDays;
+    _maxRetrieved = widget.maxRetrieved;
+    _contextTokenBudget = widget.contextTokenBudget;
+    _contextWindowTokens = widget.contextWindowTokens;
+    _temperature = widget.temperature;
+    _notes = List.of(widget.notes);
+  }
+
+  Future<void> _editNote({int? index}) async {
+    final note = await showDialog<_MemoryNote>(
+      context: context,
+      builder: (_) =>
+          _MemoryNoteDialog(existing: index == null ? null : _notes[index]),
+    );
+    if (note == null || !mounted) return;
+    setState(() {
+      if (index == null) {
+        _notes.add(note);
+      } else {
+        _notes[index] = note;
+      }
+    });
+  }
+
+  void _save() => Navigator.of(context).pop(_MemoryAtelierResult(
+        enabled: _enabled && _retentionDays != null,
+        retentionDays: _enabled ? _retentionDays : null,
+        maxRetrieved: _maxRetrieved,
+        contextTokenBudget: _contextTokenBudget,
+        contextWindowTokens: _contextWindowTokens,
+        temperature: _temperature,
+        notes: _notes,
+      ));
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('기억 아틀리에'),
+        scrollable: true,
+        content: SizedBox(
+          width: 620,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xff192726),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                'P7 HARNESS · managed SQLite bridge 대기 중\n'
+                '이 화면의 노트와 설정은 테스트용 메모리 상태이며 기기에 저장되지 않습니다.',
+                style: TextStyle(
+                    fontSize: 12, height: 1.5, color: Color(0xffb5c9c6)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile.adaptive(
+              key: const Key('memory-enable-toggle'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('장기 기억 사용'),
+              subtitle: const Text('명시적 보존 기간을 정한 경우에만 P7 저장을 허용합니다.'),
+              value: _enabled,
+              onChanged: (value) => setState(() => _enabled = value),
+            ),
+            DropdownButtonFormField<int?>(
+              key: const Key('memory-retention-choice'),
+              initialValue: _retentionDays,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '보존 기간'),
+              items: const [
+                DropdownMenuItem(
+                    value: null,
+                    child: Text('선택 필요 · 저장하지 않음',
+                        maxLines: 1, overflow: TextOverflow.ellipsis)),
+                DropdownMenuItem(value: 7, child: Text('7일')),
+                DropdownMenuItem(value: 30, child: Text('30일')),
+                DropdownMenuItem(value: 365, child: Text('1년')),
+              ],
+              onChanged: _enabled
+                  ? (value) => setState(() => _retentionDays = value)
+                  : null,
+            ),
+            const SizedBox(height: 14),
+            _BudgetCard(
+              maxRetrieved: _maxRetrieved,
+              tokenBudget: _contextTokenBudget,
+              characterInstructionTokens: widget.characterInstructionTokens,
+              contextWindowTokens: _contextWindowTokens,
+              modelPath: widget.modelPath,
+              modelLoaded: widget.modelLoaded,
+            ),
+            Slider(
+              key: const Key('memory-max-retrieved-slider'),
+              value: _maxRetrieved.toDouble(),
+              min: 1,
+              max: 6,
+              divisions: 5,
+              label: '$_maxRetrieved개',
+              onChanged: (value) =>
+                  setState(() => _maxRetrieved = value.round()),
+            ),
+            Slider(
+              key: const Key('memory-token-budget-slider'),
+              value: _contextTokenBudget.toDouble(),
+              min: 128,
+              max: 512,
+              divisions: 3,
+              label: '$_contextTokenBudget tokens',
+              onChanged: (value) =>
+                  setState(() => _contextTokenBudget = value.round()),
+            ),
+            const SizedBox(height: 8),
+            Text('Context window: $_contextWindowTokens tokens'),
+            Slider(
+              key: const Key('context-window-slider'),
+              value: _contextWindowTokens.toDouble(),
+              min: 8192,
+              max: 131072,
+              divisions: 127,
+              label: '$_contextWindowTokens tokens',
+              onChanged: (value) =>
+                  setState(() => _contextWindowTokens = value.round()),
+            ),
+            const Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                Text('기본 8k',
+                    style: TextStyle(fontSize: 11, color: Color(0xffa7bcba))),
+                Text('실험 96k',
+                    style: TextStyle(fontSize: 11, color: Color(0xff91e7cf))),
+                Text('실험 상한 128k',
+                    style: TextStyle(fontSize: 11, color: Color(0xffa7bcba))),
+              ],
+            ),
+            Text('Temperature: ${_temperature.toStringAsFixed(1)}'),
+            Slider(
+              key: const Key('memory-temperature-slider'),
+              value: _temperature,
+              min: 0.1,
+              max: 1.2,
+              divisions: 11,
+              label: _temperature.toStringAsFixed(1),
+              onChanged: (value) => setState(() => _temperature = value),
+            ),
+            const Divider(height: 28),
+            _EditorListHeader(
+              title: '기억 노트',
+              subtitle: '명시적으로 적은 사실만 장기 기억 후보가 됩니다.',
+              onAdd: () => _editNote(),
+            ),
+            if (_notes.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Text('아직 기억 노트가 없습니다.',
+                    style: TextStyle(color: Color(0xffa7bcba))),
+              ),
+            ..._notes.asMap().entries.map((entry) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(entry.value.text),
+                  subtitle: Text('중요도 ${entry.value.importance}/100'),
+                  trailing: Wrap(spacing: 0, children: [
+                    IconButton(
+                      tooltip: '기억 노트 편집',
+                      onPressed: () => _editNote(index: entry.key),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    IconButton(
+                      tooltip: '기억 노트 삭제',
+                      onPressed: () =>
+                          setState(() => _notes.removeAt(entry.key)),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ]),
+                )),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              key: const Key('memory-save'),
+              onPressed: _save,
+              child: const Text('하네스에 적용')),
+        ],
+      );
+}
+
+class _BudgetCard extends StatelessWidget {
+  const _BudgetCard({
+    required this.maxRetrieved,
+    required this.tokenBudget,
+    required this.characterInstructionTokens,
+    required this.contextWindowTokens,
+    required this.modelPath,
+    required this.modelLoaded,
+  });
+  final int maxRetrieved,
+      tokenBudget,
+      characterInstructionTokens,
+      contextWindowTokens;
+  final String modelPath;
+  final bool modelLoaded;
+
+  @override
+  Widget build(BuildContext context) {
+    const replyReserve = 8192;
+    final headroom = (contextWindowTokens -
+            tokenBudget -
+            characterInstructionTokens -
+            replyReserve)
+        .clamp(0, contextWindowTokens);
+    final probeSource = modelLoaded && modelPath.trim().isNotEmpty
+        ? 'loaded probe model'
+        : '96k-token experimental fallback';
+    return Container(
+      key: const Key('memory-context-budget'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: const Color(0xff536761)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        'CONTEXT GUARD\n'
+        '검색: 최대 $maxRetrieved개 · 기억 예산: $tokenBudget tokens\n'
+        'Character bundle 추정: $characterInstructionTokens tokens\n'
+        'Memory reservation: $tokenBudget tokens · 대화 headroom: $headroom tokens\n'
+        'Recommended context: $contextWindowTokens tokens (diagnostic estimate, $probeSource)\n'
+        '모바일 로컬 모델에서는 bundle 지시문과 검색 기억이 같은 context를 공유합니다. 예산을 넘는 노트는 prompt에 넣지 않습니다.',
+        style: const TextStyle(
+            fontSize: 12, height: 1.5, color: Color(0xffb5c9c6)),
+      ),
+    );
+  }
+}
+
+class _MemoryNoteDialog extends StatefulWidget {
+  const _MemoryNoteDialog({this.existing});
+  final _MemoryNote? existing;
+  @override
+  State<_MemoryNoteDialog> createState() => _MemoryNoteDialogState();
+}
+
+class _MemoryNoteDialogState extends State<_MemoryNoteDialog> {
+  late final TextEditingController _text;
+  late int _importance;
+  String? _error;
+  @override
+  void initState() {
+    super.initState();
+    _text = TextEditingController(text: widget.existing?.text ?? '');
+    _importance = widget.existing?.importance ?? 50;
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final text = _text.text.trim();
+    if (text.isEmpty) {
+      setState(() => _error = '기억할 내용을 입력하세요.');
+      return;
+    }
+    Navigator.of(context).pop(_MemoryNote(text: text, importance: _importance));
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.existing == null ? '기억 노트 추가' : '기억 노트 편집'),
+        scrollable: true,
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            key: const Key('memory-note-text'),
+            controller: _text,
+            minLines: 2,
+            maxLines: 5,
+            decoration: const InputDecoration(labelText: '기억할 사실 또는 설정'),
+          ),
+          const SizedBox(height: 12),
+          Text('중요도 $_importance/100'),
+          Slider(
+            key: const Key('memory-note-importance'),
+            value: _importance.toDouble(),
+            min: 0,
+            max: 100,
+            divisions: 10,
+            onChanged: (value) => setState(() => _importance = value.round()),
+          ),
+          if (_error != null)
+            Text(_error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              key: const Key('memory-note-save'),
+              onPressed: _save,
+              child: const Text('저장')),
+        ],
+      );
 }
 
 class _CharacterDraftDialog extends StatefulWidget {

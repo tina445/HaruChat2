@@ -32,12 +32,16 @@ public final class HcLlmFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHan
       picker.delegate = self
       controller.present(picker, animated: true)
     case "load":
-      let path = (call.arguments as? [String: Any])?["path"] as? String ?? ""
-      engine.load(path: path)
+      let arguments = call.arguments as? [String: Any]
+      let path = arguments?["path"] as? String ?? ""
+      let contextWindowTokens = arguments?["contextWindowTokens"] as? Int ?? 8_192
+      engine.load(path: path, contextWindowTokens: contextWindowTokens)
       result("Load dispatched")
     case "generate":
-      let prompt = (call.arguments as? [String: Any])?["prompt"] as? String ?? ""
-      engine.generate(prompt: prompt)
+      let arguments = call.arguments as? [String: Any]
+      let prompt = arguments?["prompt"] as? String ?? ""
+      let maximumOutputTokens = arguments?["maximumOutputTokens"] as? Int ?? 2_048
+      engine.generate(prompt: prompt, maximumOutputTokens: maximumOutputTokens)
       result("Generation dispatched")
     case "cancel": engine.cancel(); result("Cancel requested")
     case "reset": engine.reset(); result("Reset dispatched")
@@ -95,31 +99,39 @@ private final class ProbeEngine {
     }
   }
 
-  func load(path: String) {
+  func load(path: String, contextWindowTokens: Int) {
     worker.async {
       self.unloadLocked()
       guard let runtime = self.runtime else { self.status("Runtime initialization failed"); return }
       guard !path.isEmpty else { self.status("Choose a GGUF model first"); return }
+      guard FileManager.default.fileExists(atPath: path) else { self.status("Model file unavailable. Choose the GGUF again."); return }
+      guard FileManager.default.isReadableFile(atPath: path) else { self.status("Model file access denied. Import a local copy of the GGUF."); return }
       var options = hc_llm_model_load_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_model_load_options>.size)
       options.abi_version = hc_llm_bridge_abi_version()
       let status = path.withCString { hc_llm_model_load(runtime, $0, &options, &self.model) }
-      guard status == HC_LLM_STATUS_OK, let model = self.model else { self.status("Load failed: \(message(status))"); return }
-      var contextOptions = hc_llm_context_options()
-      contextOptions.struct_size = UInt32(MemoryLayout<hc_llm_context_options>.size)
-      contextOptions.abi_version = hc_llm_bridge_abi_version()
-      contextOptions.context_size = 2048
-      let contextStatus = hc_llm_context_create(model, &contextOptions, &self.context)
-      guard contextStatus == HC_LLM_STATUS_OK else { self.unloadLocked(); self.status("Context failed: \(message(contextStatus))"); return }
+      guard status == HC_LLM_STATUS_OK, let model = self.model else { self.status(modelLoadFailure(status)); return }
+      guard contextWindowTokens >= 8_192 && contextWindowTokens <= 131_072 else { self.unloadLocked(); self.status("Context size must be 8,192–131,072 tokens"); return }
+      let contextPolicy = self.contextPolicy(path: path, requested: contextWindowTokens)
+      var appliedContext = contextPolicy.applied
+      var contextStatus = self.createContext(model, contextWindowTokens: appliedContext)
+      if hasStatusMessage(contextStatus, "context initialization failed") && appliedContext > 8_192 {
+        // This is a policy fallback, not exception recovery: a failed large KV cache
+        // is retried once at the known-safe baseline and reported as such.
+        appliedContext = 8_192
+        contextStatus = self.createContext(model, contextWindowTokens: appliedContext)
+      }
+      guard contextStatus == HC_LLM_STATUS_OK else { self.unloadLocked(); self.status(contextFailure(contextStatus, requested: contextWindowTokens)); return }
       var metadata = hc_llm_runtime_metadata()
       metadata.struct_size = UInt32(MemoryLayout<hc_llm_runtime_metadata>.size)
       metadata.abi_version = hc_llm_bridge_abi_version()
       _ = hc_llm_runtime_get_metadata(runtime, &metadata)
-      self.status("Loaded \(URL(fileURLWithPath: path).lastPathComponent) (\(string(&metadata.backend_name)))")
+      let fallback = appliedContext == contextWindowTokens ? "" : "; requested \(contextWindowTokens), using safe fallback \(appliedContext)"
+      self.status("Loaded \(URL(fileURLWithPath: path).lastPathComponent) (\(string(&metadata.backend_name)), context \(appliedContext)\(fallback); Q8 KV, batch 256/ubatch 64\(contextPolicy.reason))")
     }
   }
 
-  func generate(prompt: String) {
+  func generate(prompt: String, maximumOutputTokens: Int) {
     worker.async {
       guard let context = self.context else { self.status("Load a GGUF model first"); return }
       // The probe submits a complete ChatML prompt per request. Reset first so
@@ -128,7 +140,7 @@ private final class ProbeEngine {
       var options = hc_llm_generation_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_generation_options>.size)
       options.abi_version = hc_llm_bridge_abi_version()
-      options.max_tokens = 128
+      options.max_tokens = UInt32(max(1, min(maximumOutputTokens, 8_192)))
       options.temperature = 0.7
       options.top_p = 0.9
       options.top_k = 40
@@ -161,6 +173,39 @@ private final class ProbeEngine {
   func reset() { worker.async { self.status(self.context.map { hc_llm_context_reset($0) == HC_LLM_STATUS_OK ? "Context reset" : "Reset unavailable" } ?? "No active context") } }
   func unload() { worker.async { self.unloadLocked(); self.status("Model unloaded") } }
 
+  private func createContext(_ model: OpaquePointer, contextWindowTokens: Int) -> hc_llm_status {
+    var options = hc_llm_context_options()
+    options.struct_size = UInt32(MemoryLayout<hc_llm_context_options>.size)
+    options.abi_version = hc_llm_bridge_abi_version()
+    options.context_size = UInt32(contextWindowTokens)
+    // A large logical batch is not required for a single-chat session.  Keep
+    // graph reservation bounded independently from the requested KV window.
+    options.batch_size = 256
+    options.ubatch_size = 64
+    options.kv_cache_type_k = UInt32(HC_LLM_KV_CACHE_TYPE_Q8_0)
+    options.kv_cache_type_v = UInt32(HC_LLM_KV_CACHE_TYPE_Q8_0)
+    options.flash_attention = UInt32(HC_LLM_FLASH_ATTENTION_ENABLED)
+    options.offload_kqv = 1
+    return hc_llm_context_create(model, &options, &self.context)
+  }
+
+  private func contextPolicy(path: String, requested: Int) -> (applied: Int, reason: String) {
+    let normalizedPath = path.lowercased()
+    guard normalizedPath.contains("kanana-2-3b"), normalizedPath.contains("q8") else {
+      return (min(requested, 32_768), requested > 32_768 ? "; model-safe cap 32768" : "")
+    }
+
+    // The published Kanana 2 3B Q8_0 GGUF is roughly 3.73 GiB.  Its published
+    // Qwen3 config reports 32 layers, 8 KV heads and head dim 128; if all
+    // layers retain full attention, Q8_0 K/V needs about 2.13 GiB at 32 Ki.
+    // On 8 GiB iPads those allocations share unified memory with weights,
+    // Metal graphs and Flutter/Unity surfaces, so do not attempt a context
+    // that is likely to be killed by JetSAM before native code can fall back.
+    let eightGiB = UInt64(8) * 1024 * 1024 * 1024
+    let cap = ProcessInfo.processInfo.physicalMemory <= eightGiB ? 16_384 : 32_768
+    return (min(requested, cap), requested > cap ? "; Kanana Q8 safety cap \(cap) on this device" : "")
+  }
+
   private func unloadLocked() {
     if let context { _ = hc_llm_context_destroy(context); self.context = nil }
     if let model { _ = hc_llm_model_unload(model); self.model = nil }
@@ -188,6 +233,25 @@ private final class ProbeEngine {
 }
 
 private func message(_ status: hc_llm_status) -> String { String(cString: hc_llm_status_message(status)) }
+
+private func modelLoadFailure(_ status: hc_llm_status) -> String {
+  if hasStatusMessage(status, "model file not found") { return "Model file was not found. Choose the GGUF again." }
+  if hasStatusMessage(status, "model file access denied") { return "Model file access was denied. Import a local copy of the GGUF." }
+  if hasStatusMessage(status, "model initialization failed") { return "Model initialization failed after file access. The GGUF may be unsupported, corrupted, or too large for current Metal memory." }
+  return "Model load failed: \(message(status))"
+}
+
+private func contextFailure(_ status: hc_llm_status, requested: Int) -> String {
+  if hasStatusMessage(status, "context initialization failed") { return "Context initialization failed at \(requested) tokens; the 8,192-token fallback also could not reserve KV-cache memory. Close other apps or use a smaller model." }
+  return "Context creation failed: \(message(status))"
+}
+
+/// The staged XCFramework may be from an older ABI-v1 build. Comparing the
+/// stable native message keeps the Swift source buildable with that header;
+/// updated artifacts supply the detailed message and enable this branch.
+private func hasStatusMessage(_ status: hc_llm_status, _ expected: String) -> Bool {
+  return message(status) == expected
+}
 
 private func string<T>(_ field: inout T) -> String {
   withUnsafePointer(to: &field) {

@@ -58,8 +58,8 @@ if [[ -n "${HARUCHAT_TEST_MODEL_PATH:-}" ]]; then
     -DLLMCORE_ENABLE_SANITIZERS=ON \
     -DLLMCORE_DISABLE_LEAK_SANITIZER=OFF \
     -DLLMCORE_ENABLE_LLAMA_CPP=ON
-  cmake --build "$model_build_dir" --target llmcore_model_smoke
-  ctest --test-dir "$model_build_dir" -R '^llmcore\.model_smoke$' --output-on-failure
+  cmake --build "$model_build_dir" --target llmcore_model_smoke llmcore_template_smoke
+  ctest --test-dir "$model_build_dir" -R '^llmcore\.(model_smoke|embedded_template_smoke)$' --output-on-failure
 else
   printf '%s\n' 'HARUCHAT_TEST_MODEL_PATH is unset; model-smoke intentionally skipped.'
 fi

@@ -95,7 +95,7 @@ cmake --build native/build
 ctest --test-dir native/build --output-on-failure
 ```
 
-repository root의 표준 전체 검증은 다음 한 명령이다. script는 managed solution, model-free native configure/build/CTest, public C consumer link smoke를 순서대로 실행한다. `HARUCHAT_TEST_MODEL_PATH`가 있으면 별도의 llama.cpp-enabled build에서 `model-smoke`만 추가 실행해 fake GGUF fixture가 real backend suite에 섞이지 않게 한다.
+repository root의 표준 전체 검증은 다음 한 명령이다. script는 managed solution, model-free native configure/build/CTest, public C consumer link smoke를 순서대로 실행한다. `HARUCHAT_TEST_MODEL_PATH`가 있으면 별도의 llama.cpp-enabled build에서 `model-smoke`만 추가 실행해 fake GGUF fixture가 real backend suite에 섞이지 않게 한다. llama.cpp submodule의 Gemma 4 vocabulary fixture가 있으면 `embedded-template` CTest는 optional `VOCAB_ONLY` load로 실제 `tokenizer.chat_template`의 지원 여부와 `general.architecture` metadata를 검사한다. pinned upstream이 지원하지 않는 complex template은 `Unsupported`이어야 하며 managed catalog가 이 architecture로 data-only fallback을 선택한다. weights 또는 generation은 요구하지 않는다.
 
 M1 managed contract suite는 external test framework 없이 .NET 10 standalone executable로 유지하므로, validation script는 `dotnet test` 뒤에 contract executable도 실행한다.
 
@@ -316,7 +316,9 @@ Gate 실패는 Linux core와 unsigned XCFramework 개발을 막지 않지만, "M
 
 ## 7. 모델, 설정과 비밀정보
 
-GGUF는 source code에 hard-code하거나 Git에 커밋하지 않는다. model catalog에는 논리 ID, family/profile ID, 파일명, 예상 byte size와 SHA-256만 저장하고 실제 경로는 runtime 설정으로 주입한다. 기본 후보는 Qwen3.5 4B의 모바일용 GGUF이지만 정확한 quantization은 device 검증 결과에 따라 교체할 수 있어야 한다.
+GGUF는 source code에 hard-code하거나 Git에 커밋하지 않는다. model catalog에는 논리 ID, family/profile ID, 파일명, 예상 byte size와 SHA-256만 저장하고 실제 경로는 runtime 설정으로 주입한다. 기본 후보는 Qwen3.5 4B의 모바일용 GGUF이지만 정확한 quantization은 device 검증 결과에 따라 교체할 수 있어야 한다. 동일 chat protocol의 여러 GGUF quantization은 하나의 profile을 공유한다.
+
+ModelProfile의 chatTemplate은 messageTemplate의 `{role}`·`{content}`과 assistantTemplate, 선택 role name mapping만 선언한다. 이 제한된 data 형식으로 Qwen ChatML과 Gemma 4 turn format을 같은 LocalModelAdapter에서 처리한다. profile은 executable Jinja를 실행하지 않으며, 새 text protocol은 profile JSON과 Linux adapter smoke를 추가해 도입한다. image/audio, tool call parser, speculative drafter처럼 text template으로 표현할 수 없는 capability는 별도 adapter/ABI 변경과 ADR이 필요하다.
 
 표준 환경변수:
 
@@ -354,7 +356,7 @@ dotnet run --project tools/headless/HaruChat.Headless.csproj -- \
   --profile packages/com.haruchat.runtime/Profiles/qwen35.json
 ```
 
-위 catalog 명령에도 `--model`과 `--profile`을 함께 붙여 local GGUF의 다회차 stream을 확인한다. GGUF fixture가 제공될 때 이 실행이 P5 local-adapter gate이며, fixture 자체는 저장소에 넣지 않는다.
+위 catalog 명령에는 재현 가능한 smoke를 위해 `--model`과 `--profile`을 함께 붙인다. 앱의 interactive load는 profile ID가 없을 때 sibling profile catalog의 metadata matcher를 사용하므로, 유일하게 일치하는 지원 GGUF는 파일 선택만으로 로드된다. GGUF fixture가 제공될 때 이 실행이 P5 local-adapter gate이며, fixture 자체는 저장소에 넣지 않는다.
 
 ## 8. 재현성과 진단
 
@@ -385,6 +387,30 @@ dotnet run --project tests/managed/HaruChat.Runtime.Contracts.Tests/HaruChat.Run
 ```
 
 실제 device에서만 검증 가능한 Metal runtime, memory pressure, thermal behavior와 signing은 별도 device 결과로 표시한다.
+
+### M4 iPad experimental context window
+
+`qwen35` profile과 probe의 기본 context window는 **8,192 tokens (8 Ki)** 이다. 이는 기존 2 Ki bootstrap보다 대화를 넓히면서, 96 Ki KV-cache의 iPad JetSAM 위험을 피하기 위한 안전한 기본값이다. Memory notebook/probe UI는 **131,072 tokens (128 Ki)** 까지 선택할 수 있지만, 96/128 Ki는 실제 GGUF metadata limit과 기기 load→generate→cancel→unload, memory-pressure, thermal smoke를 통과한 명시적 실험값일 때만 사용한다.
+
+8 Ki 기본 context의 최대 출력은 **2,048 tokens**다. 이는 prompt와 output reserve를 함께 수용하기 위한 안전한 기본값이며, 생성은 model stop sequence, context 잔여량, cancellation, 또는 이 출력 상한 중 먼저 발생하는 조건에서 끝난다.
+
+Flutter/native probe도 2,048-context/128-token bootstrap 상수를 사용하지 않고, UI에서 적용한 context(기본 8,192)와 2,048-token generation 상한을 native load/generate 요청에 전달한다. 설정을 바꾼 뒤에는 model을 unload/reload해야 새 context가 적용된다.
+
+모델 재로드 오류는 파일 없음, 파일 접근 거부, 모델 초기화 실패, context 초기화 실패를 서로 다른 native status로 표시한다. `context initialization failed`만 8 Ki baseline으로 한 번 재시도하며, 성공 시 UI가 요청값과 실제 적용값을 함께 표시한다. model initialization 실패에는 재시도하지 않는다. 이는 GGUF 형식/손상 또는 model weights의 Metal memory 실패일 수 있으므로, 사용자에게 파일 재선택 또는 더 작은 모델을 안내한다.
+
+96 Ki/128 Ki 실험에서는 local tokenizer의 실제 prompt token count를 사용한다. prompt budget의 70%에서 오래된 완료 turn을 local-only 구조화 summary로 압축하여 55% 이하를 목표로 하며, 최근 8개 완료 turn은 원문으로 유지한다. diagnostics에는 tokenizer count(원격/mock은 명시적 추정), prompt budget, 8,192 reserve, headroom, summary/압축 turn 수를 표시한다. app 재시작 시 원문 archive는 폐기한다. M4 gate는 96 Ki와 128 Ki 각각에 대해 load → 장시간 대화 → compression → generate → cancel → unload 및 memory-pressure/thermal/TTFT/TPS를 기록한다.
+
+Long-context device gate는 같은 GGUF를 다음 순서로 측정한다: 32 Ki (`n_batch=512`, `n_ubatch=128`), 64 Ki (동일), 128 Ki (`n_batch=256`, `n_ubatch=64`). K/V cache는 `Q8_0/Q8_0`, Flash Attention enabled를 baseline으로 하고, init failure면 `F16/F16`으로 되돌리지 말고 Metal/OS memory-pressure log와 requested/effective context, batch, micro-batch, K/V type, KQV offload를 먼저 수집한다. Q8 V cache 또는 Flash Attention이 target GGUF/backend에서 지원되지 않으면 context create는 recoverable failure여야 하며, CPU-offload fallback은 memory/throughput trade-off를 별도 측정한 explicit configuration으로만 사용한다.
+
+#### Kanana-2-3B-Instruct Q8_0 policy
+
+Kanana-2-3B-Instruct의 published Q8_0 GGUF는 약 3.73 GiB다. 공개 config의 32 layers, 8 KV heads, 128 head dimension을 full-attention으로 보수 산정하면 KV cache는 token당 128 KiB(F16/F16), 약 68 KiB(Q8_0/Q8_0)다. 따라서 32 Ki KV는 각각 약 4.00 GiB 또는 2.13 GiB이며, Q8 model weight, Metal compute graph, UI surface까지 같은 unified memory를 사용한다. 공개 model card의 hybrid SWA layout을 GGUF가 실제 보존했는지는 GGUF metadata/log로 확인 전까지 가정하지 않는다.
+
+Flutter iPad probe는 Kanana Q8 파일명에서 8 GiB 물리 메모리 기기를 사전 감지해 16 Ki로 제한하고, 16 GiB 이상 기기에서만 32 Ki를 시도한다. 이 정책은 native `context create` 뒤의 fallback으로 JetSAM을 복구할 수 없기 때문에 적용 전 제한한다. 모든 probe context는 `n_batch=256`, `n_ubatch=64`, Q8_0 K/V, Flash Attention enabled, KQV Metal offload를 사용한다. Kanana의 published native limit이 32 Ki이므로 64/128 Ki는 이 모델의 supported policy가 아니며 다른 long-context GGUF에서만 별도 device gate를 거친다.
+
+### Phase 7 SQLite memory (Linux)
+
+`com.haruchat.memory.sqlite`는 .NET test host에서 system `sqlite3`를 dynamic-load한다. 이 adapter는 `Microsoft.Data.Sqlite.Core`만 사용하며 bundled SQLite binary를 의존성으로 추가하지 않는다. Linux host에는 FTS5가 활성화된 system SQLite가 필요하다. iOS provider와 FTS5 linkage는 이 명령의 성공으로 주장하지 않고 Apple/device gate에서 검증한다.
 
 ### Unity CLI 우선 사용
 
