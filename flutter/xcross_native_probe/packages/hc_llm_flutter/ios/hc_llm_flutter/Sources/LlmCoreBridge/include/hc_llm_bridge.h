@@ -9,4 +9,10 @@ static inline uint32_t hc_llm_bridge_abi_version(void) {
   return HC_LLM_ABI_VERSION;
 }
 
+// Keep Swift source compatible with a staged XCFramework header from before
+// the optional long-context trailer was added. The ABI contract permits newer
+// callers to provide trailing fields; older native artifacts ignore them.
+hc_llm_status hc_llm_bridge_context_create_long(
+    hc_llm_model *model, uint32_t context_size, hc_llm_context **out_context);
+
 #endif

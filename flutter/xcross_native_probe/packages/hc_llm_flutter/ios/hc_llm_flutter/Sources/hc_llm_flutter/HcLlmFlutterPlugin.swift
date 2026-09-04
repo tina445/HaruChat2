@@ -174,19 +174,7 @@ private final class ProbeEngine {
   func unload() { worker.async { self.unloadLocked(); self.status("Model unloaded") } }
 
   private func createContext(_ model: OpaquePointer, contextWindowTokens: Int) -> hc_llm_status {
-    var options = hc_llm_context_options()
-    options.struct_size = UInt32(MemoryLayout<hc_llm_context_options>.size)
-    options.abi_version = hc_llm_bridge_abi_version()
-    options.context_size = UInt32(contextWindowTokens)
-    // A large logical batch is not required for a single-chat session.  Keep
-    // graph reservation bounded independently from the requested KV window.
-    options.batch_size = 256
-    options.ubatch_size = 64
-    options.kv_cache_type_k = UInt32(HC_LLM_KV_CACHE_TYPE_Q8_0)
-    options.kv_cache_type_v = UInt32(HC_LLM_KV_CACHE_TYPE_Q8_0)
-    options.flash_attention = UInt32(HC_LLM_FLASH_ATTENTION_ENABLED)
-    options.offload_kqv = 1
-    return hc_llm_context_create(model, &options, &self.context)
+    return hc_llm_bridge_context_create_long(model, UInt32(contextWindowTokens), &self.context)
   }
 
   private func contextPolicy(path: String, requested: Int) -> (applied: Int, reason: String) {

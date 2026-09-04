@@ -20,6 +20,14 @@ if [[ ! -d "$vendor_dir" ]]; then
   exit 1
 fi
 
+staged_header="$vendor_dir/ios-arm64/Headers/hc_llm.h"
+source_header="$repo_root/native/llmcore/include/hc_llm.h"
+if ! cmp -s "$staged_header" "$source_header"; then
+  printf '%s\n' 'The staged LlmCore.xcframework does not match native/llmcore/include/hc_llm.h.' >&2
+  printf '%s\n' 'Rebuild the XCFramework from this revision and stage it with scripts/prepare-xcross-native-probe.sh.' >&2
+  exit 1
+fi
+
 cd "$probe_dir"
 flutter pub get
 flutter build ipa --release --export-method development "$@"
