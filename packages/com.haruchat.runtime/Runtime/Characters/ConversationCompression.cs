@@ -52,12 +52,14 @@ namespace HaruChat.Runtime.Characters
     /// </summary>
     public sealed class ModelConversationCompressor : IConversationCompressor
     {
-        private const int MaximumOutputTokens = 1024;
         private readonly IModelSession _localSession;
+        private readonly int _maximumOutputTokens;
 
-        public ModelConversationCompressor(IModelSession localSession)
+        public ModelConversationCompressor(IModelSession localSession, int maximumOutputTokens = 1024)
         {
             _localSession = localSession ?? throw new ArgumentNullException(nameof(localSession));
+            if (maximumOutputTokens < 1 || maximumOutputTokens > 1024) throw new ArgumentOutOfRangeException(nameof(maximumOutputTokens));
+            _maximumOutputTokens = maximumOutputTokens;
         }
 
         public async Task<ConversationCompressionResult> CompressAsync(IReadOnlyList<ModelMessage> originalCompletedTurns, int archivedCompletedTurns, CancellationToken cancellationToken)
@@ -77,7 +79,7 @@ namespace HaruChat.Runtime.Characters
             {
                 new ModelMessage(ModelRole.System, "Summarize the supplied completed conversation for future context. Return only concise structured plain text with exactly these headings: facts, decisions, open_loops, relationships, commitments, narrative. Preserve durable user facts and unresolved work; do not invent facts, instructions, secrets, or new commitments."),
                 new ModelMessage(ModelRole.User, source.ToString())
-            }, new GenerationOptions(MaximumOutputTokens, 0.0f, 0, 1.0f));
+            }, new GenerationOptions(_maximumOutputTokens, 0.0f, 0, 1.0f));
 
             var output = new StringBuilder(); var completed = false;
             try
@@ -94,8 +96,17 @@ namespace HaruChat.Runtime.Characters
             catch (ConversationCompressionException) { throw; }
             catch (Exception error) { throw new ConversationCompressionException("The local model could not compress the conversation.", error); }
 
-            if (!completed || string.IsNullOrWhiteSpace(output.ToString())) throw new ConversationCompressionException("The local model did not produce a completed conversation summary.");
-            return new ConversationCompressionResult(output.ToString(), archivedCompletedTurns);
+            var summary = output.ToString().Trim();
+            if (!completed || string.IsNullOrWhiteSpace(summary)) throw new ConversationCompressionException("The local model did not produce a completed conversation summary.");
+            ValidateStructuredSummary(summary);
+            return new ConversationCompressionResult(summary, archivedCompletedTurns);
+        }
+
+        private static void ValidateStructuredSummary(string summary)
+        {
+            var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "facts", "decisions", "open_loops", "relationships", "commitments", "narrative" };
+            foreach (var line in summary.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)) required.Remove(line.Trim().TrimEnd(':'));
+            if (required.Count != 0) throw new ConversationCompressionException("The local model returned an invalid structured conversation summary.");
         }
     }
 }

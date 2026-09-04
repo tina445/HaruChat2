@@ -42,6 +42,9 @@ var tests = new (string Name, Action Run)[]
     ("Character chat rolls back incomplete responses", CharacterChatRollsBackIncompleteResponses),
     ("Character chat rolls back error terminal", CharacterChatRollsBackError),
     ("Character chat supports mock multi-turn streaming", CharacterChatSupportsMultiTurn),
+    ("Completed history is sent with the next request", CompletedHistoryIsSentWithNextRequest),
+    ("Prompt compiler never silently evicts conversation", PromptCompilerNeverSilentlyEvictsConversation),
+    ("Session handoff keeps summary and latest turns", SessionHandoffKeepsSummaryAndLatestTurns),
     ("New conversation waits for an active send", NewConversationWaitsForActiveSend),
     ("Character session replacement resets conversation and uses new session", CharacterSessionReplacementResetsConversation),
     ("Character bundle loader validates a minimal bundle", CharacterBundleLoads),
@@ -405,6 +408,36 @@ static void CharacterChatSupportsMultiTurn()
     var service = new CharacterChatService(character, conversation, session, new PromptCompiler(), 128);
     Consume(service.SendAsync("one", CancellationToken.None)).GetAwaiter().GetResult(); Consume(service.SendAsync("two", CancellationToken.None)).GetAwaiter().GetResult();
     Assert(conversation.Committed.Count == 4 && conversation.Committed[3].Text == "two!", "mock adapter must complete multiple committed turns");
+}
+
+static void CompletedHistoryIsSentWithNextRequest()
+{
+    var character = new CharacterDefinition("a", "A", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
+    var requests = new List<ModelRequest>();
+    var session = new MockModelAdapter("mock", request => { requests.Add(request); return new[] { ModelEvent.Token("answer"), ModelEvent.Completed() }; }).CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    var service = new CharacterChatService(character, new Conversation(), session, new PromptCompiler(), 128);
+    Consume(service.SendAsync("first user", CancellationToken.None)).GetAwaiter().GetResult();
+    Consume(service.SendAsync("second user", CancellationToken.None)).GetAwaiter().GetResult();
+    Assert(requests.Count == 2 && requests[1].Messages.Any(x => x.Role == ModelRole.User && x.Text == "first user") && requests[1].Messages.Any(x => x.Role == ModelRole.Assistant && x.Text == "answer") && requests[1].Messages.Last().Text == "second user", "the next request must contain the completed user/assistant pair before its new input");
+}
+
+static void PromptCompilerNeverSilentlyEvictsConversation()
+{
+    var character = new CharacterDefinition("a", "A", "system", null, null, null, Array.Empty<string>(), Array.Empty<ModelMessage>(), "hash");
+    var conversation = new Conversation();
+    conversation.BeginUserTurn("old-user"); conversation.CommitAssistant("old-assistant");
+    conversation.BeginUserTurn("recent-user"); conversation.CommitAssistant("recent-assistant");
+    var request = new PromptCompiler(new CharacterPromptPolicy(false, false)).Compile(character, conversation, "latest", 8);
+    Assert(request.Messages.Any(x => x.Text == "old-user") && request.Messages.Any(x => x.Text == "recent-assistant"), "the compiler must leave overflow resolution to exact-token orchestration instead of dropping old turns");
+}
+
+static void SessionHandoffKeepsSummaryAndLatestTurns()
+{
+    var conversation = new Conversation();
+    for (var i = 0; i < 3; i++) { conversation.BeginUserTurn("u" + i); conversation.CommitAssistant("a" + i); }
+    conversation.ApplyCompaction("facts:\n- durable\ndecisions:\n- none\nopen_loops:\n- none\nrelationships:\n- none\ncommitments:\n- none\nnarrative:\n- brief", 1);
+    var handoff = conversation.CreateSessionHandoff(300);
+    Assert(handoff != null && handoff.Contains("durable", StringComparison.Ordinal) && handoff.Contains("a2", StringComparison.Ordinal), "opt-in session persistence must retain both compressed context and recent raw tail");
 }
 
 static void NewConversationWaitsForActiveSend()

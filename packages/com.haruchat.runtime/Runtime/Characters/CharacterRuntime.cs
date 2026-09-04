@@ -151,11 +151,14 @@ namespace HaruChat.Runtime.Characters
         // The archive intentionally remains process-local.  It lets a new summary be generated
         // from the original exchanges instead of recursively summarizing a prior summary.
         private readonly List<ModelMessage> _archive = new List<ModelMessage>();
-        private ModelMessage? _pending; private string? _compressedSummary; private int _compactedCompletedTurns;
+        private ModelMessage? _pending; private string? _compressedSummary; private int _compactedCompletedTurns; private int _discardedCompletedTurns;
         public IReadOnlyList<ModelMessage> Committed { get { return Array.AsReadOnly(_committed.ToArray()); } }
         public IReadOnlyList<ModelMessage> Archived { get { return Array.AsReadOnly(_archive.ToArray()); } }
         public string? CompressedSummary { get { return _compressedSummary; } }
         public int CompactedCompletedTurns { get { return _compactedCompletedTurns; } }
+        /// <summary>Completed turns still omitted after compression could not make the prompt fit.</summary>
+        public int DiscardedCompletedTurns { get { return Math.Max(0, _discardedCompletedTurns - _compactedCompletedTurns); } }
+        public int LiveCompletedTurns { get { return _committed.Count / 2; } }
         public void BeginUserTurn(string text) { if (_pending != null) throw new InvalidOperationException("A turn is already pending."); _pending = new ModelMessage(ModelRole.User, text); }
         public void CommitAssistant(string text)
         {
@@ -177,19 +180,41 @@ namespace HaruChat.Runtime.Characters
         {
             if (string.IsNullOrWhiteSpace(structuredSummary)) throw new ArgumentException("A non-empty summary is required.", nameof(structuredSummary));
             if (archivedCompletedTurns < _compactedCompletedTurns || archivedCompletedTurns > _archive.Count / 2) throw new ArgumentOutOfRangeException(nameof(archivedCompletedTurns));
-            var newlyCompacted = archivedCompletedTurns - _compactedCompletedTurns;
+            var liveStart = Math.Max(_compactedCompletedTurns, _discardedCompletedTurns);
+            var newlyCompacted = Math.Max(0, archivedCompletedTurns - liveStart);
             if (newlyCompacted * 2 > _committed.Count) throw new InvalidOperationException("Compaction source is no longer present in the live history.");
-            _committed.RemoveRange(0, newlyCompacted * 2);
+            if (newlyCompacted > 0) _committed.RemoveRange(0, newlyCompacted * 2);
             _compressedSummary = structuredSummary.Trim(); _compactedCompletedTurns = archivedCompletedTurns;
+        }
+        /// <summary>Last-resort overflow handling. Callers must preserve their recent-turn policy.</summary>
+        public void DiscardOldestLiveTurns(int count, int retainedCompletedTurns)
+        {
+            if (count < 1 || retainedCompletedTurns < 0 || LiveCompletedTurns - count < retainedCompletedTurns) throw new ArgumentOutOfRangeException(nameof(count));
+            _committed.RemoveRange(0, count * 2); _discardedCompletedTurns = Math.Max(_discardedCompletedTurns, _compactedCompletedTurns) + count;
         }
         public void ClearCompaction()
         {
             if (_compactedCompletedTurns == 0) return;
-            _committed.InsertRange(0, _archive.Take(_compactedCompletedTurns * 2));
+            _committed.Clear(); _committed.AddRange(_archive.Skip(_discardedCompletedTurns * 2));
             _compressedSummary = null; _compactedCompletedTurns = 0;
         }
         public void RollbackPending() { _pending = null; }
-        public void Reset() { _pending = null; _committed.Clear(); _archive.Clear(); _compressedSummary = null; _compactedCompletedTurns = 0; }
+        public string? CreateSessionHandoff(int maximumCharacters)
+        {
+            if (maximumCharacters < 64) throw new ArgumentOutOfRangeException(nameof(maximumCharacters));
+            var result = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(_compressedSummary)) result.Append("Session summary:\n").Append(_compressedSummary.Trim());
+            var tail = new StringBuilder();
+            foreach (var message in _committed.Skip(Math.Max(0, _committed.Count - 4))) tail.Append('\n').Append(message.Role == ModelRole.User ? "User: " : "Assistant: ").Append(message.Text);
+            var summaryBudget = maximumCharacters - Math.Min(maximumCharacters / 2, tail.Length);
+            if (result.Length > summaryBudget) result.Length = summaryBudget;
+            var tailText = tail.ToString();
+            var tailBudget = maximumCharacters - result.Length;
+            if (tailText.Length > tailBudget) tailText = tailText.Substring(tailText.Length - tailBudget);
+            result.Append(tailText);
+            return result.Length == 0 ? null : result.ToString();
+        }
+        public void Reset() { _pending = null; _committed.Clear(); _archive.Clear(); _compressedSummary = null; _compactedCompletedTurns = 0; _discardedCompletedTurns = 0; }
     }
 
     public sealed class PromptCompiler
@@ -228,10 +253,10 @@ namespace HaruChat.Runtime.Characters
                 else summaryTokens = 0;
             }
             var retained = new List<ModelMessage>(conversation.Committed); retained.Add(new ModelMessage(ModelRole.User, userInput));
-            var excludedTurns = 0;
-            while (Estimate(messages) + Estimate(retained) > contextBudget && retained.Count > 1) { retained.RemoveRange(0, Math.Min(2, retained.Count - 1)); excludedTurns++; }
-            if (Estimate(messages) + Estimate(retained) > contextBudget) throw new ContextBudgetExceededException();
-            messages.AddRange(retained); return new PromptPlan(new ModelRequest(messages, generation), character.Id, character.ContentHash, CompilerVersion, excludedTurns, Estimate(messages), summaryTokens, conversation.CompactedCompletedTurns);
+            // Do not silently discard history here. The service applies compression and only then
+            // uses the exact tokenizer count for any last-resort overflow handling.
+            if (Estimate(messages) + Estimate(new[] { retained[retained.Count - 1] }) > contextBudget) throw new ContextBudgetExceededException();
+            messages.AddRange(retained); return new PromptPlan(new ModelRequest(messages, generation), character.Id, character.ContentHash, CompilerVersion, conversation.DiscardedCompletedTurns, Estimate(messages), summaryTokens, conversation.CompactedCompletedTurns, memoryTokens, Estimate(retained));
         }
         private static void Add(List<ModelMessage> messages, ModelRole role, string? text) { if (!string.IsNullOrWhiteSpace(text)) messages.Add(new ModelMessage(role, text)); }
         private static int Estimate(IEnumerable<ModelMessage> messages) { return messages.Sum(x => Math.Max(1, (x.Text.Length + 3) / 4)); }
@@ -256,20 +281,20 @@ namespace HaruChat.Runtime.Characters
     /// <summary>Provider-neutral prompt snapshot and compiler diagnostics; adapters consume only Request.</summary>
     public sealed class PromptPlan
     {
-        public PromptPlan(ModelRequest request, string characterId, string characterContentHash, string compilerVersion, int excludedCompletedTurns, int estimatedPromptTokens = 0, int summaryEstimatedTokens = 0, int compactedCompletedTurns = 0)
-        { Request = request ?? throw new ArgumentNullException(nameof(request)); CharacterId = characterId ?? string.Empty; CharacterContentHash = characterContentHash ?? string.Empty; CompilerVersion = compilerVersion ?? string.Empty; ExcludedCompletedTurns = excludedCompletedTurns; EstimatedPromptTokens = estimatedPromptTokens; SummaryEstimatedTokens = summaryEstimatedTokens; CompactedCompletedTurns = compactedCompletedTurns; }
+        public PromptPlan(ModelRequest request, string characterId, string characterContentHash, string compilerVersion, int excludedCompletedTurns, int estimatedPromptTokens = 0, int summaryEstimatedTokens = 0, int compactedCompletedTurns = 0, int memoryEstimatedTokens = 0, int conversationEstimatedTokens = 0)
+        { Request = request ?? throw new ArgumentNullException(nameof(request)); CharacterId = characterId ?? string.Empty; CharacterContentHash = characterContentHash ?? string.Empty; CompilerVersion = compilerVersion ?? string.Empty; ExcludedCompletedTurns = excludedCompletedTurns; EstimatedPromptTokens = estimatedPromptTokens; SummaryEstimatedTokens = summaryEstimatedTokens; CompactedCompletedTurns = compactedCompletedTurns; MemoryEstimatedTokens = memoryEstimatedTokens; ConversationEstimatedTokens = conversationEstimatedTokens; }
         public ModelRequest Request { get; } public string CharacterId { get; } public string CharacterContentHash { get; } public string CompilerVersion { get; } public int ExcludedCompletedTurns { get; } public int EstimatedPromptTokens { get; }
-        public int SummaryEstimatedTokens { get; } public int CompactedCompletedTurns { get; }
+        public int SummaryEstimatedTokens { get; } public int CompactedCompletedTurns { get; } public int MemoryEstimatedTokens { get; } public int ConversationEstimatedTokens { get; }
     }
     public sealed class ContextWindowStatus
     {
-        public ContextWindowStatus(int capacityTokens, int outputReserveTokens, int estimatedPromptTokens, long? reportedPromptTokens, long? generatedTokens, int excludedCompletedTurns, int summaryEstimatedTokens = 0, int compactedCompletedTurns = 0, int? actualTokenizerPromptTokens = null)
-        { CapacityTokens = capacityTokens; OutputReserveTokens = outputReserveTokens; EstimatedPromptTokens = estimatedPromptTokens; ReportedPromptTokens = reportedPromptTokens; GeneratedTokens = generatedTokens; ExcludedCompletedTurns = excludedCompletedTurns; SummaryEstimatedTokens = summaryEstimatedTokens; CompactedCompletedTurns = compactedCompletedTurns; ActualTokenizerPromptTokens = actualTokenizerPromptTokens; }
+        public ContextWindowStatus(int capacityTokens, int outputReserveTokens, int estimatedPromptTokens, long? reportedPromptTokens, long? generatedTokens, int excludedCompletedTurns, int summaryEstimatedTokens = 0, int compactedCompletedTurns = 0, int? actualTokenizerPromptTokens = null, int memoryEstimatedTokens = 0, int conversationEstimatedTokens = 0)
+        { CapacityTokens = capacityTokens; OutputReserveTokens = outputReserveTokens; EstimatedPromptTokens = estimatedPromptTokens; ReportedPromptTokens = reportedPromptTokens; GeneratedTokens = generatedTokens; ExcludedCompletedTurns = excludedCompletedTurns; SummaryEstimatedTokens = summaryEstimatedTokens; CompactedCompletedTurns = compactedCompletedTurns; ActualTokenizerPromptTokens = actualTokenizerPromptTokens; MemoryEstimatedTokens = memoryEstimatedTokens; ConversationEstimatedTokens = conversationEstimatedTokens; }
         public int CapacityTokens { get; } public int OutputReserveTokens { get; } public int PromptBudgetTokens { get { return CapacityTokens - OutputReserveTokens; } } public int EstimatedPromptTokens { get; } public long? ReportedPromptTokens { get; } public long? GeneratedTokens { get; } public int ExcludedCompletedTurns { get; }
         public int? ActualTokenizerPromptTokens { get; }
         public long UsedTokens { get { return ActualTokenizerPromptTokens ?? ReportedPromptTokens ?? EstimatedPromptTokens; } }
         public long RemainingTokens { get { return Math.Max(0, PromptBudgetTokens - UsedTokens); } }
-        public int SummaryEstimatedTokens { get; } public int CompactedCompletedTurns { get; }
+        public int SummaryEstimatedTokens { get; } public int CompactedCompletedTurns { get; } public int MemoryEstimatedTokens { get; } public int ConversationEstimatedTokens { get; }
     }
     public sealed class ContextBudgetExceededException : Exception { public ContextBudgetExceededException() : base("The required prompt exceeds the context budget.") { } }
 }
