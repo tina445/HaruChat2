@@ -78,14 +78,14 @@ namespace HaruChat.Runtime.Models
             }
             private async Task PumpAsync(LocalGenerationHandle job, EventQueue queue, CancellationToken cancellationToken)
             {
-                var decoder = new UTF8Encoding(false, true).GetDecoder(); var stops = new StopFilter(WithReservedOutputStops(_profile.StopSequences)); var reasoning = new ReasoningFilter(_profile.ReasoningOutput); var watch = Stopwatch.StartNew(); TimeSpan? firstToken = null;
-                try { while (true) { cancellationToken.ThrowIfCancellationRequested(); var batch = await _backend.PollEventsAsync(job, 32, cancellationToken).ConfigureAwait(false); Ensure(batch); if (batch.Value.Events.Count == 0) { await Task.Delay(8, cancellationToken).ConfigureAwait(false); continue; } foreach (var raw in batch.Value.Events) { switch (raw.Kind) { case LocalBackendEventKind.Token: var text = Decode(decoder, raw.Payload, false); if (text.Length > 0 && firstToken == null) firstToken = watch.Elapsed; if (!await WriteFragmentsAsync(queue, reasoning.Push(text, false), stops, cancellationToken).ConfigureAwait(false)) return; break; case LocalBackendEventKind.Metrics: _usage = new ModelUsage(raw.Metrics.PromptTokenCount, raw.Metrics.GeneratedTokenCount, raw.Metrics.Elapsed); _diagnostics = new ModelDiagnostics(_runtimeMetadata.BackendName, _runtimeMetadata.BackendName.IndexOf("metal", StringComparison.OrdinalIgnoreCase) >= 0 ? true : (bool?)null, _metadata?.ContextWindowTokens ?? _profile.ContextWindowTokens, _loadDuration, firstToken, Rate(raw.Metrics.PromptTokenCount, raw.Metrics.Elapsed), Rate(raw.Metrics.GeneratedTokenCount, raw.Metrics.Elapsed)); await queue.WriteAsync(ModelEvent.UsageSnapshot(_usage), cancellationToken).ConfigureAwait(false); break; case LocalBackendEventKind.Completed: if (!await WriteFragmentsAsync(queue, reasoning.Push(Decode(decoder, ReadOnlyMemory<byte>.Empty, true), true), stops, cancellationToken).ConfigureAwait(false)) return; if (!await WriteTextAsync(queue, stops.Flush(), stops.Stopped, cancellationToken).ConfigureAwait(false)) return; await queue.WriteAsync(ModelEvent.Completed(), cancellationToken).ConfigureAwait(false); queue.Complete(); return; case LocalBackendEventKind.Cancelled: queue.Complete(new OperationCanceledException()); return; case LocalBackendEventKind.Error: await queue.WriteAsync(ModelEvent.ErrorEvent(new ModelError(Map(raw.Error.Code, raw.Error.Message), raw.Error.Message)), cancellationToken).ConfigureAwait(false); queue.Complete(); return; default: queue.Complete(new ModelOperationException(ModelErrorCode.BackendFailure, "Unknown local event.")); return; } } } }
+                var decoder = new UTF8Encoding(false, true).GetDecoder(); var stops = new StopFilter(WithReservedOutputStops(_profile.StopSequences)); var protocol = new ProtocolFilter(_profile.ReasoningOutput); var reasoning = new ReasoningFilter(_profile.ReasoningOutput); var watch = Stopwatch.StartNew(); TimeSpan? firstToken = null;
+                try { while (true) { cancellationToken.ThrowIfCancellationRequested(); var batch = await _backend.PollEventsAsync(job, 32, cancellationToken).ConfigureAwait(false); Ensure(batch); if (batch.Value.Events.Count == 0) { await Task.Delay(8, cancellationToken).ConfigureAwait(false); continue; } foreach (var raw in batch.Value.Events) { switch (raw.Kind) { case LocalBackendEventKind.Token: var text = Decode(decoder, raw.Payload, false); if (text.Length > 0 && firstToken == null) firstToken = watch.Elapsed; if (!await WriteFragmentsAsync(queue, reasoning.Push(protocol.Push(text, false), false), stops, cancellationToken).ConfigureAwait(false)) return; break; case LocalBackendEventKind.Metrics: _usage = new ModelUsage(raw.Metrics.PromptTokenCount, raw.Metrics.GeneratedTokenCount, raw.Metrics.Elapsed); _diagnostics = new ModelDiagnostics(_runtimeMetadata.BackendName, _runtimeMetadata.BackendName.IndexOf("metal", StringComparison.OrdinalIgnoreCase) >= 0 ? true : (bool?)null, _metadata?.ContextWindowTokens ?? _profile.ContextWindowTokens, _loadDuration, firstToken, Rate(raw.Metrics.PromptTokenCount, raw.Metrics.Elapsed), Rate(raw.Metrics.GeneratedTokenCount, raw.Metrics.Elapsed)); await queue.WriteAsync(ModelEvent.UsageSnapshot(_usage), cancellationToken).ConfigureAwait(false); break; case LocalBackendEventKind.Completed: if (!await WriteFragmentsAsync(queue, reasoning.Push(protocol.Push(Decode(decoder, ReadOnlyMemory<byte>.Empty, true), true), true), stops, cancellationToken).ConfigureAwait(false)) return; if (!await WriteTextAsync(queue, stops.Flush(), stops.Stopped, cancellationToken).ConfigureAwait(false)) return; await queue.WriteAsync(ModelEvent.Completed(), cancellationToken).ConfigureAwait(false); queue.Complete(); return; case LocalBackendEventKind.Cancelled: queue.Complete(new OperationCanceledException()); return; case LocalBackendEventKind.Error: await queue.WriteAsync(ModelEvent.ErrorEvent(new ModelError(Map(raw.Error.Code, raw.Error.Message), raw.Error.Message)), cancellationToken).ConfigureAwait(false); queue.Complete(); return; default: queue.Complete(new ModelOperationException(ModelErrorCode.BackendFailure, "Unknown local event.")); return; } } } }
                 catch (Exception error) { queue.Complete(error is ModelOperationException || error is OperationCanceledException ? error : new ModelOperationException(ModelErrorCode.BackendFailure, error.Message)); }
             }
             private static async Task<bool> WriteFragmentsAsync(EventQueue queue, IReadOnlyList<ReasoningFragment> fragments, StopFilter stops, CancellationToken cancellationToken) { foreach (var fragment in fragments) { if (fragment.IsReasoning) { if (fragment.Text.Length > 0) await queue.WriteAsync(ModelEvent.Reasoning(fragment.Text), cancellationToken).ConfigureAwait(false); continue; } if (!await WriteTextAsync(queue, stops.Push(fragment.Text), stops.Stopped, cancellationToken).ConfigureAwait(false)) return false; } return true; }
             private static async Task<bool> WriteTextAsync(EventQueue queue, string text, bool stopped, CancellationToken cancellationToken) { if (text.Length > 0) await queue.WriteAsync(ModelEvent.Token(text), cancellationToken).ConfigureAwait(false); if (!stopped) return true; await queue.WriteAsync(ModelEvent.Completed(), cancellationToken).ConfigureAwait(false); queue.Complete(); return false; }
             private static string Decode(Decoder decoder, ReadOnlyMemory<byte> value, bool flush) { var bytes = value.ToArray(); var chars = new char[Math.Max(1, Encoding.UTF8.GetMaxCharCount(bytes.Length))]; decoder.Convert(bytes, 0, bytes.Length, chars, 0, chars.Length, flush, out _, out var used, out _); return new string(chars, 0, used); }
-            private static IReadOnlyList<string> WithReservedOutputStops(IReadOnlyList<string> profileStops) { var stops = new List<string>(profileStops); if (!stops.Contains("<|im_end|>")) stops.Add("<|im_end|>"); return stops; }
+            private static IReadOnlyList<string> WithReservedOutputStops(IReadOnlyList<string> profileStops) { var stops = new List<string>(profileStops); foreach (var marker in new[] { "<|im_end|>", "<|end_of_turn|>", "<end_of_turn>", "<turn|>" }) if (!stops.Contains(marker)) stops.Add(marker); return stops; }
             private static double? Rate(long tokens, TimeSpan elapsed) { return elapsed.TotalSeconds <= 0 ? (double?)null : tokens / elapsed.TotalSeconds; }
             public async Task ResetAsync(CancellationToken ct) { await _lifetime.WaitAsync(ct).ConfigureAwait(false); try { ThrowIfDisposed(); var result = await _backend.ResetContextAsync(_context, ct).ConfigureAwait(false); Ensure(result); } finally { _lifetime.Release(); } }
             public Task<ModelUsage> GetUsageAsync(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(_usage); }
@@ -108,6 +108,65 @@ namespace HaruChat.Runtime.Models
             private async Task<string> SerializeAsync(IReadOnlyList<ModelMessage> messages, CancellationToken ct) { if (!_embeddedTemplate) return _profile.ChatTemplate.Render(messages); var converted = new List<LocalChatMessage>(); foreach (var message in messages) converted.Add(new LocalChatMessage(message.Role.ToString().ToLowerInvariant(), message.Text)); var result = await ((ILocalModelChatTemplateBackend)_backend).ApplyChatTemplateAsync(_model, converted, ct).ConfigureAwait(false); if (result.IsSuccess) return result.Value; if (result.Error.Code == LocalBackendErrorCode.Unsupported && _templateFallbackProfile != null) return _templateFallbackProfile.ChatTemplate.Render(messages); Ensure(result); return string.Empty; }
         }
         private readonly struct ReasoningFragment { public ReasoningFragment(string text, bool isReasoning) { Text = text; IsReasoning = isReasoning; } public string Text { get; } public bool IsReasoning { get; } }
+        /// <summary>
+        /// Removes transport/role delimiters before response text reaches either
+        /// a UI or the conversation store.  It recognizes protocol shape and
+        /// semantic channel names, never a model family.  Explicit profile
+        /// reasoning policy remains authoritative for its own marker pair.
+        /// </summary>
+        private sealed class ProtocolFilter
+        {
+            private readonly ReasoningOutputPolicy? _explicitReasoning; private string _buffer = string.Empty; private string _roleHeader = string.Empty; private bool _awaitingRole; private bool _insidePrivate;
+            public ProtocolFilter(ReasoningOutputPolicy? explicitReasoning) { _explicitReasoning = explicitReasoning; }
+            public string Push(string value, bool flush)
+            {
+                _buffer += value; var output = new StringBuilder(); var cursor = 0; string? carry = null;
+                while (cursor < _buffer.Length)
+                {
+                    var start = _buffer.IndexOf('<', cursor);
+                    if (start < 0) { AddPlain(output, _buffer.Substring(cursor), flush); cursor = _buffer.Length; break; }
+                    if (start > cursor) AddPlain(output, _buffer.Substring(cursor, start - cursor), false);
+                    var end = _buffer.IndexOf('>', start + 1);
+                    if (end < 0) { if (flush) AddPlain(output, _buffer.Substring(start), true); else carry = _buffer.Substring(start); cursor = _buffer.Length; break; }
+                    var tag = _buffer.Substring(start, end - start + 1); var name = Name(tag);
+                    if (IsProtocolTag(tag, name))
+                    {
+                        if (IsOutputTerminator(tag, name)) output.Append(tag);
+                        if (IsPrivateChannel(name)) _insidePrivate = !IsClosing(tag);
+                        else if (name == "imstart" || name == "startofturn" || (name == "turn" && tag.StartsWith("<|", StringComparison.Ordinal))) { _awaitingRole = true; _roleHeader = string.Empty; }
+                    }
+                    else AddPlain(output, tag, false);
+                    cursor = end + 1;
+                }
+                _buffer = flush ? string.Empty : (carry ?? string.Empty);
+                return output.ToString();
+            }
+            private void AddPlain(StringBuilder output, string value, bool flush)
+            {
+                if (_insidePrivate || value.Length == 0) return;
+                if (_awaitingRole)
+                {
+                    _roleHeader += value; var newline = _roleHeader.IndexOf('\n');
+                    if (newline < 0 && !flush) return;
+                    var header = newline < 0 ? _roleHeader : _roleHeader.Substring(0, newline); var rest = newline < 0 ? string.Empty : _roleHeader.Substring(newline + 1); _roleHeader = string.Empty; _awaitingRole = false;
+                    var normalized = Normalize(header);
+                    if (normalized != "system" && normalized != "user" && normalized != "assistant" && normalized != "model") { output.Append(header); if (newline >= 0) output.Append('\n'); }
+                    output.Append(rest); return;
+                }
+                output.Append(value);
+            }
+            private bool IsProtocolTag(string tag, string name)
+            {
+                if (_explicitReasoning != null && (string.Equals(tag, _explicitReasoning.OpenMarker, StringComparison.Ordinal) || string.Equals(tag, _explicitReasoning.CloseMarker, StringComparison.Ordinal))) return false;
+                if (tag.StartsWith("<|", StringComparison.Ordinal) && tag.EndsWith("|>", StringComparison.Ordinal)) return true;
+                return IsPrivateChannel(name) || name == "system" || name == "user" || name == "assistant" || name == "model" || name == "imstart" || name == "imend" || name == "startofturn" || name == "endofturn" || name == "beginoftext" || name == "endoftext" || name == "eot" || name == "turn" || name == "channel" || name == "tool" || name == "toolcall" || name == "toolresult";
+            }
+            private static bool IsPrivateChannel(string name) { return name == "analysis" || name == "reasoning" || name == "scratchpad" || name == "thought" || name == "reflection" || name == "cot"; }
+            private static bool IsOutputTerminator(string tag, string name) { return name == "imend" || name == "endofturn" || name == "eot" || (!tag.StartsWith("<|", StringComparison.Ordinal) && tag.EndsWith("|>", StringComparison.Ordinal)); }
+            private static bool IsClosing(string tag) { return tag.StartsWith("</", StringComparison.Ordinal) || tag.StartsWith("<|/", StringComparison.Ordinal); }
+            private static string Name(string tag) { return Normalize(tag.Substring(1, tag.Length - 2).Trim('|').TrimStart('/')); }
+            private static string Normalize(string value) { var output = new StringBuilder(); foreach (var c in value) if (char.IsLetterOrDigit(c)) output.Append(char.ToLowerInvariant(c)); return output.ToString(); }
+        }
         private sealed class ReasoningFilter
         {
             private readonly ReasoningOutputPolicy _policy; private string _buffer = string.Empty; private bool _inside;

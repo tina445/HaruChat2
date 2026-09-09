@@ -8,6 +8,10 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!-- Adapter projects share the runtime's custom obj root during graph discovery. -->
     <RestoreBuildInParallel>false</RestoreBuildInParallel>
+    <!-- The package projects share a redirected intermediate root.  Serial
+         project-reference discovery avoids MSBuild's silent graph failure on
+         Linux when it queries those projects concurrently. -->
+    <BuildInParallel>false</BuildInParallel>
   </PropertyGroup>
   <ItemGroup>
     <!-- The test executable directly consumes runtime contracts as well as adapter

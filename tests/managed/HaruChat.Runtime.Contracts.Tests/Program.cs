@@ -161,6 +161,19 @@ static void LocalAdapterFiltersReasoningAndControlTokens()
     Assert(output.Count(x => x.Kind == ModelEventKind.Completed) == 1, "control-token stop must yield exactly one terminal event");
     session.DisposeAsync().GetAwaiter().GetResult();
 
+    var genericEvents = new[]
+    {
+        new LocalBackendEvent(LocalBackendEventKind.Token, 1, System.Text.Encoding.UTF8.GetBytes("<|turn>mo"), default, default),
+        new LocalBackendEvent(LocalBackendEventKind.Token, 2, System.Text.Encoding.UTF8.GetBytes("del\n<analysis>private</ana"), default, default),
+        new LocalBackendEvent(LocalBackendEventKind.Token, 3, System.Text.Encoding.UTF8.GetBytes("lysis>answer<turn|>ignored"), default, default),
+        new LocalBackendEvent(LocalBackendEventKind.Completed, 4, Array.Empty<byte>(), default, default),
+    };
+    var generic = new LocalModelAdapter("generic", new StreamingBackend(genericEvents), new ModelConfig("/tmp/any.gguf", "generic"), new ModelProfile("generic", 1, Template(), 128, new GenerationOptions()));
+    var genericSession = generic.CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
+    var genericText = ConsumeText(genericSession.GenerateAsync(new ModelRequest(new[] { new ModelMessage(ModelRole.User, "x") }), CancellationToken.None)).GetAwaiter().GetResult();
+    Assert(genericText == "answer", "role delimiters and semantic private channels must not require a Gemma-specific branch; actual: " + genericText);
+    genericSession.DisposeAsync().GetAwaiter().GetResult();
+
     var separateProfile = new ModelProfile("separate", 1, Template(), 128, new GenerationOptions(), reasoningOutput: new ReasoningOutputPolicy("<think>", "</think>", ReasoningOutputMode.Separate));
     var separate = new LocalModelAdapter("separate", new StreamingBackend(new[] { new LocalBackendEvent(LocalBackendEventKind.Token, 1, System.Text.Encoding.UTF8.GetBytes("<think>private</think>answer"), default, default), new LocalBackendEvent(LocalBackendEventKind.Completed, 2, Array.Empty<byte>(), default, default) }), new ModelConfig("/tmp/model.gguf", "separate"), separateProfile);
     var separateSession = separate.CreateSessionAsync(new ModelSessionOptions(128), CancellationToken.None).GetAwaiter().GetResult();
