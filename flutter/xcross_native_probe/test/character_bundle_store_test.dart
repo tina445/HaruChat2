@@ -66,5 +66,6 @@ void main() {
     expect(await File('${updated.path}/examples.jsonl').readAsString(),
         contains('"assistant"'));
     expect(updated.promptContext, contains('Lore — 001-world.md'));
+    expect(updated.systemPromptContext, isNot(contains('user: Hello')));
   });
 }

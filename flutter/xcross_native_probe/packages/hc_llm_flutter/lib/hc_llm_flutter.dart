@@ -1,17 +1,19 @@
 import 'package:flutter/services.dart';
 
 class NativeProbeEvent {
-  const NativeProbeEvent({this.status, this.logLine, this.token, this.isTerminal = false});
+  const NativeProbeEvent({this.status, this.logLine, this.token, this.isTerminal = false, this.completed = false});
   final String? status;
   final String? logLine;
   final String? token;
   final bool isTerminal;
+  final bool completed;
 
   factory NativeProbeEvent.fromMap(Map<Object?, Object?> map) => NativeProbeEvent(
         status: map['status'] as String?,
         logLine: map['logLine'] as String?,
         token: map['token'] as String?,
         isTerminal: map['isTerminal'] as bool? ?? false,
+        completed: map['completed'] as bool? ?? false,
       );
 }
 
@@ -26,8 +28,18 @@ class HcLlmFlutter {
   static Future<String?> chooseModel() => _method.invokeMethod<String>('chooseModel');
   static Future<String> load(String path, {required int contextWindowTokens}) =>
       _invoke('load', {'path': path, 'contextWindowTokens': contextWindowTokens});
-  static Future<String> generate(String prompt, {required int maximumOutputTokens}) =>
-      _invoke('generate', {'prompt': prompt, 'maximumOutputTokens': maximumOutputTokens});
+  static Future<String> generate(String prompt,
+          {required List<MapEntry<String, String>> messages,
+          required int maximumOutputTokens,
+          required double temperature}) =>
+      _invoke('generate', {
+        'prompt': prompt,
+        'messages': messages
+            .map((message) => {'role': message.key, 'content': message.value})
+            .toList(growable: false),
+        'maximumOutputTokens': maximumOutputTokens,
+        'temperature': temperature,
+      });
   static Future<String> cancel() => _invoke('cancel');
   static Future<String> reset() => _invoke('reset');
   static Future<String> unload() => _invoke('unload');

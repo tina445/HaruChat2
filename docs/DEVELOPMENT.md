@@ -450,7 +450,7 @@ cd flutter/xcross_native_probe
 flutter test
 ```
 
-이 검증은 layout과 native event projection만 증명한다. raw diagnostic ChatML prompt는 P5 managed conversation runtime이 아니며, Flutter/xcross 성공은 Unity composition root, Unity iOS packaging, M4 Metal runtime 또는 P6 MVP Gate를 대체하지 않는다. iPad device 실행에는 기존 Phase 3 xcross prerequisites와 artifact staging을 계속 적용한다.
+이 검증은 layout과 native event projection만 증명한다. probe는 매 요청에서 완료된 user/assistant turn 전체를 재생하고, 지원되는 GGUF에서는 내장 `tokenizer.chat_template`을 우선 적용한다. template 적용 여부·실제 prompt token 수·재생한 history message 수는 생성 상태에 표시한다. 취소·오류 assistant fragment는 화면에만 남기고 다음 prompt에는 넣지 않는다. 출력 경계는 모델명에 의존하지 않고 template/role control delimiter와 private reasoning channel을 사용자 버블에서 제거한다. opt-in probe vault는 character namespace와 retention으로 수동 노트를 device-local에 보관한다. 이는 P5 managed conversation runtime이나 managed SQLite와 데이터를 공유하지 않는다. Flutter/xcross 성공은 Unity composition root, Unity iOS packaging, M4 Metal runtime 또는 P6 MVP Gate를 대체하지 않는다. iPad device 실행에는 기존 Phase 3 xcross prerequisites와 artifact staging을 계속 적용한다.
 
 Flutter iOS 산출물이 필요할 때는 release/AOT build를 우선한다. xcross는 현재 debug/JIT device probe 전용이며 iPadOS 26에서는 홈 화면에서 단독 실행할 수 없다. Linux에서는 `xcross flutter build --ipa`를 probe artifact로만 사용한다. `flutter/xcross_native_probe/ios/Runner.xcworkspace`는 macOS release build를 위한 표준 Flutter iOS project다.
 

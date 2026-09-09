@@ -18,7 +18,7 @@ Phase 6's production Presentation remains Unity, but the current environment can
 
 ## Consequences
 
-Linux can validate P6 UI layout and interaction state without a Unity editor. Character conversation semantics remain the raw diagnostic prompt path, so this host does not prove the managed `CharacterChatService`, Unity composition root, Metal activation, or Apple packaging. Those stay as explicit Unity/M4 gates.
+Linux can validate P6 UI layout and interaction state without a Unity editor. The probe now replays completed turns through the GGUF chat template when available (with a narrow ChatML fallback), but it still does not prove the managed `CharacterChatService`, Unity composition root, Metal activation, or Apple packaging. Those stay as explicit Unity/M4 gates.
 
 ## Status
 

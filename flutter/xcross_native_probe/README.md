@@ -1,8 +1,8 @@
 # HaruChat P6 Flutter UI Test Host
 
-`xcross_native_probe`는 Phase 3 native lifecycle probe이면서, Unity build가 불가능한 환경에서 P6 화면 구조를 검증하는 Flutter test host다. Unity scene의 control rail/drawer, model·character control, chat stream, cancel/reset/unload 및 diagnostics를 반영한다.
+`xcross_native_probe`는 Phase 3 native lifecycle probe이면서, Unity build가 불가능한 환경에서 P6 화면 구조를 검증하는 Flutter test host다. Unity scene의 control rail/drawer, model·character control, 완료 turn replay, chat stream, cancel/reset/unload 및 diagnostics를 반영한다. GGUF 내장 chat template를 우선 적용하고, 모델별 marker에 의존하지 않는 출력 경계가 protocol/reasoning control text를 사용자 응답에서 분리한다.
 
-Flutter widget test와 native C ABI event projection을 검증할 뿐이다. Unity composition root, managed multi-turn conversation, iOS packaging, Metal runtime과 M4 iPad MVP Gate는 대체하지 않는다.
+Flutter widget test와 native C ABI event projection을 검증할 뿐이다. probe는 완료된 multi-turn transcript를 매 요청에 replay하고 GGUF 내장 chat template을 우선 사용하지만, Unity composition root나 managed SQLite/P7 DB와 상태를 공유하지 않는다. iOS packaging, Metal runtime과 M4 iPad MVP Gate는 대체하지 않는다.
 
 ```bash
 flutter test

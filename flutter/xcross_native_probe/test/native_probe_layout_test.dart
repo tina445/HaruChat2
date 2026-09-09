@@ -3,6 +3,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:haruchat_xcross_native_probe/main.dart';
 
 void main() {
+  test('prompt replay includes completed history, memory, and only one assistant cue', () {
+    final prompt = buildProbeChatPrompt(
+      system: 'persona',
+      memories: const ['사용자는 동화를 좋아한다.'],
+      turns: const [
+        MapEntry('user', '무도회 연습을 잊은 공주 이야기'),
+        MapEntry('assistant', '공주가 양이 되었습니다.'),
+        MapEntry('user', '이야기를 만들어서 들려줘'),
+        MapEntry('assistant', ''),
+      ],
+    );
+    expect(prompt, contains('무도회 연습을 잊은 공주 이야기'));
+    expect(prompt, contains('공주가 양이 되었습니다.'));
+    expect(prompt, contains('이야기를 만들어서 들려줘'));
+    expect(prompt, contains('사용자는 동화를 좋아한다.'));
+    expect('<|im_start|>assistant'.allMatches(prompt).length, 2);
+    expect(prompt.endsWith('<|im_start|>assistant\n'), isTrue);
+  });
+
+  test('response projection hides split protocol and private reasoning channels without model-specific rules', () {
+    final projector = VisibleResponseProjector();
+    expect(projector.add('<start_of_turn>mo'), isEmpty);
+    expect(projector.add('del\n<th'), isEmpty);
+    expect(projector.add('ink>private chain of thought</th'), isEmpty);
+    expect(projector.add('ink>옛 이야기의 설정을 살려서\n'), '옛 이야기의 설정을 살려서\n');
+    expect(projector.add('<|im_end|>', isFinal: true), isEmpty);
+  });
+
   Future<void> pumpHarness(WidgetTester tester, Size size) async {
     await tester.binding.setSurfaceSize(size);
     await tester.pumpWidget(const HaruChatNativeProbeApp());
@@ -71,7 +99,7 @@ void main() {
 
     expect(find.text('기억 아틀리에'), findsOneWidget);
     expect(find.byKey(const Key('memory-enable-toggle')), findsOneWidget);
-    expect(find.textContaining('managed SQLite bridge 대기 중'), findsOneWidget);
+    expect(find.textContaining('P7 PROBE VAULT'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -84,7 +112,7 @@ void main() {
     expect(find.byKey(const Key('memory-context-budget')), findsOneWidget);
     expect(find.byKey(const Key('context-window-slider')), findsOneWidget);
     expect(find.text('Context window: 8192 tokens'), findsOneWidget);
-    expect(find.text('Temperature: 0.7'), findsOneWidget);
+    expect(find.text('Temperature: 0.3'), findsOneWidget);
     expect(find.textContaining('Recommended context: 8192 tokens'),
         findsOneWidget);
     expect(

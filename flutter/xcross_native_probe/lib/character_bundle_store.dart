@@ -81,13 +81,20 @@ class CharacterBundleSummary extends CharacterBundleDraft {
       lore: lore,
       examples: examples);
 
-  String get promptContext => [
+  /// Provider-neutral system section. Few-shot examples remain role messages
+  /// so an embedded GGUF chat template can delimit them correctly.
+  String get systemPromptContext => [
         system,
         if (personality.trim().isNotEmpty) 'Personality:\n$personality',
         if (style.trim().isNotEmpty) 'Speaking style:\n$style',
         if (scenario.trim().isNotEmpty) 'Scenario:\n$scenario',
         ...lore.map((entry) => 'Lore — ${entry.name}:\n${entry.text}'),
         'Treat the declared personality and speaking style as binding. Do not substitute a generic assistant voice.',
+      ].join('\n\n');
+
+  /// Compatibility text used only by the bundle-editor preview.
+  String get promptContext => [
+        systemPromptContext,
         ...examples.map((entry) => '${entry.role}: ${entry.text}'),
       ].join('\n\n');
 }

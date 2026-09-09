@@ -40,8 +40,14 @@ public final class HcLlmFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHan
     case "generate":
       let arguments = call.arguments as? [String: Any]
       let prompt = arguments?["prompt"] as? String ?? ""
+      let messages = (arguments?["messages"] as? [[String: Any]] ?? []).compactMap { entry -> ProbeChatMessage? in
+        guard let role = entry["role"] as? String, let content = entry["content"] as? String,
+              role == "system" || role == "user" || role == "assistant" else { return nil }
+        return ProbeChatMessage(role: role, content: content)
+      }
       let maximumOutputTokens = arguments?["maximumOutputTokens"] as? Int ?? 2_048
-      engine.generate(prompt: prompt, maximumOutputTokens: maximumOutputTokens)
+      let temperature = arguments?["temperature"] as? Double ?? 0.7
+      engine.generate(promptFallback: prompt, messages: messages, maximumOutputTokens: maximumOutputTokens, temperature: temperature)
       result("Generation dispatched")
     case "cancel": engine.cancel(); result("Cancel requested")
     case "reset": engine.reset(); result("Reset dispatched")
@@ -75,12 +81,18 @@ public final class HcLlmFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHan
   }
 }
 
+private struct ProbeChatMessage {
+  let role: String
+  let content: String
+}
+
 private final class ProbeEngine {
   private let worker = DispatchQueue(label: "org.haruchat.xcross-native-probe")
   private let jobLock = NSLock()
   private var runtime: OpaquePointer?
   private var model: OpaquePointer?
   private var context: OpaquePointer?
+  private var appliedContextTokens = 0
   private var job: OpaquePointer?
   var emit: (([String: Any]) -> Void)?
 
@@ -122,6 +134,7 @@ private final class ProbeEngine {
         contextStatus = self.createContext(model, contextWindowTokens: appliedContext)
       }
       guard contextStatus == HC_LLM_STATUS_OK else { self.unloadLocked(); self.status(contextFailure(contextStatus, requested: contextWindowTokens)); return }
+      self.appliedContextTokens = appliedContext
       var metadata = hc_llm_runtime_metadata()
       metadata.struct_size = UInt32(MemoryLayout<hc_llm_runtime_metadata>.size)
       metadata.abi_version = hc_llm_bridge_abi_version()
@@ -131,28 +144,36 @@ private final class ProbeEngine {
     }
   }
 
-  func generate(prompt: String, maximumOutputTokens: Int) {
+  func generate(promptFallback: String, messages: [ProbeChatMessage], maximumOutputTokens: Int, temperature: Double) {
     worker.async {
-      guard let context = self.context else { self.status("Load a GGUF model first"); return }
+      guard let context = self.context else { self.finishWithoutCompletion("Load a GGUF model first"); return }
       // The probe submits a complete ChatML prompt per request. Reset first so
       // previous raw prompt tokens cannot bias or duplicate the next response.
-      guard hc_llm_context_reset(context) == HC_LLM_STATUS_OK else { self.status("Context reset failed"); return }
+      guard hc_llm_context_reset(context) == HC_LLM_STATUS_OK else { self.finishWithoutCompletion("Context reset failed"); return }
       var options = hc_llm_generation_options()
       options.struct_size = UInt32(MemoryLayout<hc_llm_generation_options>.size)
       options.abi_version = hc_llm_bridge_abi_version()
       options.max_tokens = UInt32(max(1, min(maximumOutputTokens, 8_192)))
-      options.temperature = 0.7
+      options.temperature = Float(max(0.0, min(2.0, temperature)))
       options.top_p = 0.9
       options.top_k = 40
       options.seed = UInt32.random(in: UInt32.min...UInt32.max)
+      let rendered = self.embeddedTemplatePrompt(messages)
+      let prompt = rendered?.prompt ?? promptFallback
       let input = Array(prompt.utf8)
+      guard let promptTokens = self.countPromptTokens(input),
+            Int(promptTokens) + Int(options.max_tokens) <= self.appliedContextTokens else {
+        self.finishWithoutCompletion("Context budget exceeded before generation; shorten the conversation or start a new one.")
+        return
+      }
       let startStatus = input.withUnsafeBufferPointer { buffer in
         options.prompt_utf8 = buffer.baseAddress
         options.prompt_bytes = UInt32(buffer.count)
         return hc_llm_job_start(context, &options, &self.job)
       }
-      guard startStatus == HC_LLM_STATUS_OK, let job = self.job else { self.status("Generate failed: \(message(startStatus))"); return }
-      self.status("Generating…")
+      guard startStatus == HC_LLM_STATUS_OK, let job = self.job else { self.finishWithoutCompletion("Generate failed: \(message(startStatus))"); return }
+      let historyMessages = max(0, messages.count - 2)
+      self.status("Generating… \(rendered == nil ? "fallback ChatML" : "GGUF chat template"), prompt \(promptTokens) / \(self.appliedContextTokens), history \(historyMessages) messages, output reserve \(options.max_tokens)")
       self.jobLock.lock(); self.job = job; self.jobLock.unlock()
       while true {
         var event = hc_llm_event()
@@ -177,6 +198,53 @@ private final class ProbeEngine {
     return hc_llm_bridge_context_create_long(model, UInt32(contextWindowTokens), &self.context)
   }
 
+  private func embeddedTemplatePrompt(_ messages: [ProbeChatMessage]) -> (prompt: String, messageCount: Int)? {
+    guard let model, !messages.isEmpty else { return nil }
+    var roles: [UnsafeMutablePointer<CChar>?] = []
+    var contents: [UnsafeMutablePointer<UInt8>?] = []
+    defer { roles.forEach { free($0) }; contents.forEach { $0?.deallocate() } }
+    var native: [hc_llm_chat_message] = []
+    for message in messages {
+      guard let role = strdup(message.role) else { return nil }
+      let bytes = Array(message.content.utf8)
+      let content = UnsafeMutablePointer<UInt8>.allocate(capacity: max(1, bytes.count))
+      if !bytes.isEmpty { content.initialize(from: bytes, count: bytes.count) }
+      roles.append(role); contents.append(content)
+      native.append(hc_llm_chat_message(role_utf8: UnsafePointer(role), content_utf8: UnsafePointer(content), content_bytes: UInt32(bytes.count)))
+    }
+    var required: UInt32 = 0
+    let queryStatus = native.withUnsafeMutableBufferPointer {
+      hc_llm_model_apply_chat_template(model, $0.baseAddress, UInt32($0.count), 1, nil, 0, &required)
+    }
+    guard queryStatus == HC_LLM_STATUS_OK, required > 1 else { return nil }
+    var output = [UInt8](repeating: 0, count: Int(required))
+    let renderStatus = native.withUnsafeMutableBufferPointer { nativeBuffer in
+      output.withUnsafeMutableBufferPointer { outputBuffer in
+        hc_llm_model_apply_chat_template(model, nativeBuffer.baseAddress, UInt32(nativeBuffer.count), 1, outputBuffer.baseAddress, required, &required)
+      }
+    }
+    guard renderStatus == HC_LLM_STATUS_OK else { return nil }
+    guard let prompt = String(bytes: output.dropLast(), encoding: .utf8) else { return nil }
+    return (prompt, messages.count)
+  }
+
+  /// A native preflight/start failure has no job to emit a terminal event.
+  /// Emit one explicitly so Dart never leaves a pending assistant bubble in
+  /// the next prompt after a rejected generation.
+  private func finishWithoutCompletion(_ value: String) {
+    status(value)
+    emit?(["isTerminal": true, "completed": false])
+  }
+
+  private func countPromptTokens(_ input: [UInt8]) -> UInt32? {
+    guard let model else { return nil }
+    var count: UInt32 = 0
+    let status = input.withUnsafeBufferPointer {
+      hc_llm_model_count_tokens(model, $0.baseAddress, UInt32($0.count), &count)
+    }
+    return status == HC_LLM_STATUS_OK ? count : nil
+  }
+
   private func contextPolicy(path: String, requested: Int) -> (applied: Int, reason: String) {
     let normalizedPath = path.lowercased()
     guard normalizedPath.contains("kanana-2-3b"), normalizedPath.contains("q8") else {
@@ -196,6 +264,7 @@ private final class ProbeEngine {
 
   private func unloadLocked() {
     if let context { _ = hc_llm_context_destroy(context); self.context = nil }
+    appliedContextTokens = 0
     if let model { _ = hc_llm_model_unload(model); self.model = nil }
   }
 
@@ -214,7 +283,7 @@ private final class ProbeEngine {
       "metrics": ["emitted_token_count": event.metrics.emitted_token_count, "queue_depth": event.metrics.queue_depth, "elapsed_milliseconds": event.metrics.elapsed_milliseconds],
     ]
     let json = (try? JSONSerialization.data(withJSONObject: line)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-    var output: [String: Any] = ["logLine": json, "isTerminal": event.is_terminal != 0]
+    var output: [String: Any] = ["logLine": json, "isTerminal": event.is_terminal != 0, "completed": event.type == HC_LLM_EVENT_COMPLETED]
     if event.type == HC_LLM_EVENT_TOKEN { output["token"] = utf8 ?? "" }
     emit?(output)
   }

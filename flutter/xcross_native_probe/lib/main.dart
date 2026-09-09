@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hc_llm_flutter/hc_llm_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'character_bundle_store.dart';
 
@@ -11,6 +14,155 @@ void main() {
   unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
       overlays: const []));
   runApp(const HaruChatNativeProbeApp());
+}
+
+/// Builds the full, stateless prompt snapshot required by the native probe.
+/// Keeping this pure makes the history boundary regression-testable without iOS.
+String buildProbeChatPrompt({
+  required String system,
+  required Iterable<MapEntry<String, String>> turns,
+  Iterable<String> memories = const [],
+}) {
+  return serializeProbeChatMl(buildProbeChatMessages(
+      system: system, turns: turns, memories: memories));
+}
+
+String serializeProbeChatMl(Iterable<MapEntry<String, String>> messages) {
+  final prompt = StringBuffer();
+  for (final message in messages) {
+    prompt.write('<|im_start|>${message.key}\n${message.value}<|im_end|>\n');
+  }
+  // Do not prefill model-specific reasoning markup.  A GGUF with a native
+  // template owns that convention; this deliberately plain fallback only
+  // marks the next assistant turn.
+  prompt.write('<|im_start|>assistant\n');
+  return prompt.toString();
+}
+
+List<MapEntry<String, String>> buildProbeChatMessages({
+  required String system,
+  required Iterable<MapEntry<String, String>> turns,
+  Iterable<String> memories = const [],
+}) {
+  final systemContext = StringBuffer('$system\n\n'
+      '대화 연속성 규칙: 아래의 완료된 사용자·모델 응답은 현재 대화의 사실이다. 이름, 배경, 요청한 줄거리와 미해결 지시를 일관되게 유지한다. 가장 최신 사용자 요청을 직접 따른다. 이야기를 쓰거나 들려 달라는 요청에는 가능한 주제를 설명하는 대신, 앞선 대화 사실을 반영한 이야기를 실제로 작성한다.');
+  final selectedMemories = memories.where((memory) => memory.trim().isNotEmpty);
+  if (selectedMemories.isNotEmpty) {
+    systemContext.write('\n\nRelevant long-term memory (use only when relevant):\n');
+    for (final memory in selectedMemories) systemContext.write('- $memory\n');
+  }
+  final messages = <MapEntry<String, String>>[
+    MapEntry('system', systemContext.toString()),
+  ];
+  for (final turn in turns) {
+    if ((turn.key != 'user' && turn.key != 'assistant') ||
+        turn.value.trim().isEmpty) continue;
+    messages.add(turn);
+  }
+  return messages;
+}
+
+/// Projects a streaming model response into text that belongs in a chat
+/// bubble.  Templates are model-owned, but their control delimiters and
+/// private reasoning channels are not user-facing content.  This parser is
+/// deliberately based on protocol shape and channel semantics rather than a
+/// model name: it handles split chunks, `<|...|>` control tokens, role turns,
+/// and common reasoning-channel names without teaching the app about Gemma,
+/// Qwen, or any other individual model.
+class VisibleResponseProjector {
+  String _pending = '';
+  String _pendingRoleHeader = '';
+  bool _insidePrivateChannel = false;
+
+  String add(String fragment, {bool isFinal = false}) {
+    _pending += fragment;
+    final visible = StringBuffer();
+    var cursor = 0;
+    String? carry;
+    while (cursor < _pending.length) {
+      final tagStart = _pending.indexOf('<', cursor);
+      if (tagStart < 0) {
+        _writePlain(visible, _pending.substring(cursor), isFinal: isFinal);
+        cursor = _pending.length;
+        break;
+      }
+      if (tagStart > cursor) {
+        _writePlain(visible, _pending.substring(cursor, tagStart));
+      }
+      final tagEnd = _pending.indexOf('>', tagStart + 1);
+      if (tagEnd < 0) {
+        // Keep an incomplete delimiter for the next native token.  It must
+        // not flash briefly into the UI while a split marker is arriving.
+        if (isFinal) _writePlain(visible, _pending.substring(tagStart), isFinal: true);
+        if (!isFinal) carry = _pending.substring(tagStart);
+        cursor = _pending.length;
+        break;
+      }
+      final tag = _pending.substring(tagStart, tagEnd + 1);
+      if (_isProtocolTag(tag)) {
+        final channel = _channelName(tag);
+        if (_isPrivateChannel(channel)) {
+          _insidePrivateChannel = !_isClosingTag(tag);
+        } else if (channel == 'imstart' || channel == 'startofturn') {
+          _pendingRoleHeader = '';
+          _awaitingRoleHeader = true;
+        }
+      } else {
+        // Ordinary prose/code such as `<div>` is not a chat protocol marker.
+        visible.write(tag);
+      }
+      cursor = tagEnd + 1;
+    }
+    _pending = isFinal ? '' : (carry ?? '');
+    return visible.toString();
+  }
+
+  void _writePlain(StringBuffer visible, String text, {bool isFinal = false}) {
+    if (_insidePrivateChannel || text.isEmpty) return;
+    if (_pendingRoleHeader.isNotEmpty || _awaitingRoleHeader) {
+      _pendingRoleHeader += text;
+      final newline = _pendingRoleHeader.indexOf('\n');
+      if (newline < 0 && !isFinal) return;
+      final header = newline < 0 ? _pendingRoleHeader : _pendingRoleHeader.substring(0, newline);
+      final rest = newline < 0 ? '' : _pendingRoleHeader.substring(newline + 1);
+      _pendingRoleHeader = '';
+      _awaitingRoleHeader = false;
+      final normalized = header.trim().replaceAll(RegExp(r'[^a-zA-Z]'), '').toLowerCase();
+      if (!const {'system', 'user', 'assistant', 'model'}.contains(normalized)) {
+        visible.write(header);
+        if (newline >= 0) visible.write('\n');
+      }
+      visible.write(rest);
+      return;
+    }
+    visible.write(text);
+  }
+
+  bool _awaitingRoleHeader = false;
+
+  static bool _isProtocolTag(String tag) {
+    final name = _channelName(tag);
+    if (tag.startsWith('<|') && tag.endsWith('|>')) return true;
+    return _isPrivateChannel(name) || const {
+      'system', 'user', 'assistant', 'model', 'imstart', 'imend',
+      'startofturn', 'endofturn', 'beginoftext', 'endoftext', 'eot',
+      'turn', 'channel', 'tool', 'toolcall', 'toolresult'
+    }.contains(name);
+  }
+
+  static String _channelName(String tag) => tag
+      .substring(1, tag.length - 1)
+      .replaceAll('|', '')
+      .replaceFirst(RegExp(r'^/'), '')
+      .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+      .toLowerCase();
+
+  static bool _isClosingTag(String tag) => tag.startsWith('</') || tag.startsWith('<|/');
+
+  static bool _isPrivateChannel(String name) => name.contains('think') ||
+      name.contains('analysis') || name.contains('reason') ||
+      name.contains('scratch') || name.contains('thought') ||
+      name.contains('reflection') || name == 'cot';
 }
 
 /// Flutter test host mirroring the Phase 6 Unity screen. Native lifecycle
@@ -67,15 +219,17 @@ class _KeyboardDismissOnTap extends StatelessWidget {
 }
 
 class _ChatMessage {
-  _ChatMessage(this.role, this.text);
+  _ChatMessage(this.role, this.text, {this.completed = true});
   final String role;
   String text;
+  bool completed;
 }
 
 class _MemoryNote {
-  const _MemoryNote({required this.text, required this.importance});
+  const _MemoryNote({required this.text, required this.importance, this.savedAtUnixMs = 0});
   final String text;
   final int importance;
+  final int savedAtUnixMs;
 }
 
 class _MemoryAtelierResult {
@@ -117,6 +271,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
   List<CharacterBundleSummary> _characters = const [];
   CharacterBundleSummary? _selectedCharacter;
   _ChatMessage? _reply;
+  VisibleResponseProjector? _responseProjector;
   String _status = '모델을 불러오지 않았습니다.';
   bool _generating = false;
   bool _modelLoaded = false;
@@ -125,7 +280,10 @@ class _NativeProbePageState extends State<NativeProbePage> {
   int _maxRetrievedMemories = 3;
   int _memoryContextTokenBudget = 256;
   int _contextWindowTokens = 8192;
-  double _temperature = 0.7;
+  int? _appliedContextWindowTokens;
+  // Conversation-following is more important than creative variation in the
+  // diagnostic host.  The user can still raise this per character.
+  double _temperature = 0.3;
   List<_MemoryNote> _memoryNotes = const [];
 
   @override
@@ -135,6 +293,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
       _setStatus('Native event stream failed: $error');
     });
     unawaited(_refreshCharacters());
+    unawaited(_loadMemorySettings());
   }
 
   @override
@@ -148,14 +307,31 @@ class _NativeProbePageState extends State<NativeProbePage> {
   void _onEvent(NativeProbeEvent event) {
     if (!mounted) return;
     setState(() {
-      if (event.status != null) _status = event.status!;
+      if (event.status != null) {
+        _status = event.status!;
+        if (event.status!.startsWith('Loaded ')) _modelLoaded = true;
+        if (event.status!.contains('failed') ||
+            event.status!.contains('unavailable') ||
+            event.status!.contains('denied') ||
+            event.status! == 'Model unloaded') _modelLoaded = false;
+      }
+      final contextMatch = RegExp(r'\bcontext (\d+)').firstMatch(event.status ?? '');
+      if (contextMatch != null) {
+        _appliedContextWindowTokens = int.tryParse(contextMatch.group(1)!);
+      }
       if (event.logLine != null) _log.add(event.logLine!);
       if (event.token != null) {
         _reply ??= _ChatMessage('assistant', '');
         if (!_messages.contains(_reply)) _messages.add(_reply!);
-        _reply!.text += event.token!;
+        _reply!.text += (_responseProjector ??= VisibleResponseProjector()).add(event.token!);
       }
-      if (event.isTerminal) _generating = false;
+      if (event.isTerminal) {
+        if (_reply != null) {
+          _reply!.text += (_responseProjector ??= VisibleResponseProjector()).add('', isFinal: true);
+        }
+        if (event.completed && _reply != null) _reply!.completed = true;
+        _generating = false;
+      }
     });
   }
 
@@ -179,7 +355,8 @@ class _NativeProbePageState extends State<NativeProbePage> {
     if (mounted) {
       setState(() {
         _status = status;
-        _modelLoaded = !status.toLowerCase().contains('failed');
+        _modelLoaded = false;
+        _appliedContextWindowTokens = null;
       });
     }
   }
@@ -190,22 +367,54 @@ class _NativeProbePageState extends State<NativeProbePage> {
     setState(() {
       _composer.clear();
       _messages.add(_ChatMessage('user', input));
-      _reply = _ChatMessage('assistant', '');
+      _reply = _ChatMessage('assistant', '', completed: false);
+      _responseProjector = VisibleResponseProjector();
       _messages.add(_reply!);
       _log.clear();
       _generating = true;
       _status = '응답을 스트리밍하고 있습니다…';
     });
-    _setStatus(await NativeProbe.generate(_probePrompt(input),
-        maximumOutputTokens: 2048));
+    _setStatus(await NativeProbe.generate(_probePrompt(),
+        messages: _probeMessages(),
+        maximumOutputTokens: 2048, temperature: _temperature));
   }
 
-  String _probePrompt(String user) {
-    final system = _selectedCharacter?.promptContext ??
+  String _probePrompt() {
+    // The native probe has no managed CharacterChatService. Its visible transcript
+    // is therefore replayed as the complete prompt snapshot on every generation.
+    return serializeProbeChatMl(_probeMessages());
+  }
+
+  List<MapEntry<String, String>> _probeMessages() {
+    final system = _selectedCharacter?.systemPromptContext ??
         'You are a concise, helpful assistant.';
-    return '<|im_start|>system\n$system<|im_end|>\n'
-        '<|im_start|>user\n$user<|im_end|>\n'
-        '<|im_start|>assistant\n<think>\n\n</think>\n\n';
+    return buildProbeChatMessages(
+      system: system,
+      turns: [
+        ...?_selectedCharacter?.examples
+            .map((example) => MapEntry(example.role, example.text)),
+        ..._messages
+            .where((message) => message.role != 'assistant' || message.completed)
+            .map((message) => MapEntry(message.role, message.text)),
+      ],
+      memories: _selectedMemoryNotes().map((memory) => memory.text),
+    );
+  }
+
+  List<_MemoryNote> _selectedMemoryNotes() {
+    if (!_memoryEnabled) return const [];
+    var remaining = _memoryContextTokenBudget;
+    final selected = <_MemoryNote>[];
+    final ranked = [..._memoryNotes]..sort((a, b) => b.importance.compareTo(a.importance));
+    for (final note in ranked) {
+      final estimatedTokens = (note.text.length + 3) ~/ 4;
+      if (estimatedTokens <= remaining) {
+        selected.add(note);
+        remaining -= estimatedTokens;
+      }
+      if (selected.length >= _maxRetrievedMemories) break;
+    }
+    return selected;
   }
 
   Future<void> _cancel() async {
@@ -220,6 +429,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
         _status = status;
         _modelLoaded = false;
         _generating = false;
+        _appliedContextWindowTokens = null;
       });
     }
   }
@@ -256,10 +466,94 @@ class _NativeProbePageState extends State<NativeProbePage> {
           _characters = characters;
           _selectedCharacter = canonicalSelection;
         });
+        await _loadMemorySettings(characterId: canonicalSelection?.id);
       }
     } catch (error) {
       _setStatus('Character storage unavailable: $error');
     }
+  }
+
+  Future<void> _selectCharacter(CharacterBundleSummary? character) async {
+    if (_selectedCharacter?.id != character?.id) {
+      // A transcript is short-term memory for exactly one character.  Leaving
+      // it live across a switch can both leak private context and cause the
+      // selected character to answer from another character's scene.
+      await NativeProbe.reset();
+      if (!mounted) return;
+      setState(() {
+        _selectedCharacter = character;
+        _messages
+          ..clear()
+          ..add(_ChatMessage('system', '캐릭터를 바꾸어 새 대화를 시작했습니다.'));
+        _reply = null;
+        _generating = false;
+      });
+    }
+    await _loadMemorySettings(characterId: character?.id);
+  }
+
+  String get _memoryNamespace => _selectedCharacter?.id ?? '_default';
+
+  Future<File> _memoryFile(String? characterId) async {
+    final documents = await getApplicationDocumentsDirectory();
+    final directory = Directory('${documents.path}/HaruChatProbe/memory-vault');
+    await directory.create(recursive: true);
+    final id = characterId ?? '_default';
+    return File('${directory.path}/${base64Url.encode(utf8.encode(id))}.json');
+  }
+
+  Future<void> _loadMemorySettings({String? characterId}) async {
+    final namespace = characterId ?? _memoryNamespace;
+    try {
+      final file = await _memoryFile(namespace);
+      if (!await file.exists()) {
+        if (mounted && namespace == _memoryNamespace) setState(() => _resetMemorySettings());
+        return;
+      }
+      final value = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final retention = value['retentionDays'] as int?;
+      final cutoff = retention == null ? null : DateTime.now().millisecondsSinceEpoch - Duration(days: retention).inMilliseconds;
+      final notes = (value['notes'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map((note) => _MemoryNote(text: note['text'] as String? ?? '', importance: note['importance'] as int? ?? 0, savedAtUnixMs: note['savedAtUnixMs'] as int? ?? 0))
+          .where((note) => note.text.trim().isNotEmpty && (cutoff == null || note.savedAtUnixMs >= cutoff))
+          .toList(growable: false);
+      if (mounted && namespace == _memoryNamespace) {
+        setState(() {
+          _memoryEnabled = value['enabled'] as bool? ?? false;
+          _memoryRetentionDays = retention;
+          _maxRetrievedMemories = value['maxRetrieved'] as int? ?? 3;
+          _memoryContextTokenBudget = value['contextTokenBudget'] as int? ?? 256;
+          _temperature = (value['temperature'] as num? ?? .3).toDouble();
+          _memoryNotes = notes;
+        });
+      }
+    } catch (_) {
+      if (mounted && namespace == _memoryNamespace) setState(() => _resetMemorySettings());
+    }
+  }
+
+  void _resetMemorySettings() {
+    _memoryEnabled = false; _memoryRetentionDays = null; _maxRetrievedMemories = 3;
+    _memoryContextTokenBudget = 256; _temperature = .3; _memoryNotes = const [];
+  }
+
+  Future<void> _saveMemorySettings() async {
+    final file = await _memoryFile(_memoryNamespace);
+    if (!_memoryEnabled || _memoryRetentionDays == null) {
+      if (await file.exists()) await file.delete();
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final notes = _memoryNotes.map((note) => {
+      'text': note.text, 'importance': note.importance,
+      'savedAtUnixMs': note.savedAtUnixMs == 0 ? now : note.savedAtUnixMs,
+    }).toList(growable: false);
+    await file.writeAsString(jsonEncode({
+      'version': 1, 'enabled': true, 'retentionDays': _memoryRetentionDays,
+      'maxRetrieved': _maxRetrievedMemories, 'contextTokenBudget': _memoryContextTokenBudget,
+      'temperature': _temperature, 'notes': notes,
+    }), flush: true);
   }
 
   Future<void> _addCharacter() async {
@@ -321,6 +615,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
       _temperature = result.temperature;
       _memoryNotes = result.notes;
     });
+    await _saveMemorySettings();
   }
 
   @override
@@ -335,8 +630,7 @@ class _NativeProbePageState extends State<NativeProbePage> {
             selected: _selectedCharacter,
             loaded: _modelLoaded,
             generating: _generating,
-            onCharacterChanged: (value) =>
-                setState(() => _selectedCharacter = value),
+            onCharacterChanged: _selectCharacter,
             onAddCharacter: _addCharacter,
             onEditCharacter: _editCharacter,
             onRefreshCharacters: _refreshCharacters,
@@ -370,7 +664,8 @@ class _NativeProbePageState extends State<NativeProbePage> {
                       memoryEnabled: _memoryEnabled,
                       memoryNoteCount: _memoryNotes.length,
                       memoryBudget: _memoryContextTokenBudget,
-                      contextWindowTokens: _contextWindowTokens,
+                      contextWindowTokens:
+                          _appliedContextWindowTokens ?? _contextWindowTokens,
                       characterInstructionTokens:
                           (_selectedCharacter?.promptContext.length ?? 0) ~/ 4,
                       onOpenMemoryAtelier: _openMemoryAtelier,
@@ -673,7 +968,7 @@ class _MemoryPulse extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const outputReserve = 8192;
+    const outputReserve = 2048;
     final reserved = memoryBudget + characterInstructionTokens + outputReserve;
     final safeHeadroom =
         (contextWindowTokens - reserved).clamp(0, contextWindowTokens);
@@ -789,8 +1084,8 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-/// UI-only P7 preview. Persistence remains disabled until the managed SQLite
-/// bridge owns these values; this harness deliberately never writes memories.
+/// Probe-local, opt-in memory vault. Production Unity uses the managed SQLite
+/// adapter; this independent host never shares data with it.
 class _MemoryAtelierDialog extends StatefulWidget {
   const _MemoryAtelierDialog({
     required this.enabled,
@@ -881,8 +1176,8 @@ class _MemoryAtelierDialogState extends State<_MemoryAtelierDialog> {
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Text(
-                'P7 HARNESS · managed SQLite bridge 대기 중\n'
-                '이 화면의 노트와 설정은 테스트용 메모리 상태이며 기기에 저장되지 않습니다.',
+                'P7 PROBE VAULT · 캐릭터별 기기 로컬 저장\n'
+                '명시적 보존 기간을 정해 켠 노트만 저장합니다. Unity/managed SQLite와는 공유되지 않습니다.',
                 style: TextStyle(
                     fontSize: 12, height: 1.5, color: Color(0xffb5c9c6)),
               ),
